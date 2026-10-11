@@ -6,8 +6,8 @@ export const ProcessingState: React.FC = () => {
     'A enviar o ficheiro de áudio para o modelo Gemini...',
     'A analisar estilo sonoro: género, BPM exato, tom, instrumentos e tipo de voz...',
     'A examinar atmosfera, mistura de áudio e técnicas de produção sonora...',
-    'A mapear a melodia original: número de versos, cadência de sílabas e esquema de rimas...',
-    'A detetar o idioma da canção e a compor a letra para encaixe milimétrico na melodia...',
+    'A analisar se a faixa é cantada ou batida instrumental (groove, kick, snare, baixo)...',
+    'A estruturar a versão alternativa no idioma adequado com fidelidade máxima...',
     'A gerar etiquetas hiper-fidelizadas e a confirmar limites de caracteres (máx. 4500 letra, máx. 950 estilo)...',
   ];
 

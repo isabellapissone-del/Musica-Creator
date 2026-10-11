@@ -250,6 +250,66 @@ export const StyleCard: React.FC<StyleCardProps> = ({ styleData }) => {
                 </div>
               )}
 
+              {musicalStyle.compasso && (
+                <div className="p-2.5 rounded-xl bg-zinc-950/50 border border-zinc-800 flex items-start gap-2">
+                  <Gauge className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Compasso</span>
+                    <span className="font-semibold text-zinc-100">{musicalStyle.compasso}</span>
+                  </div>
+                </div>
+              )}
+
+              {musicalStyle.swingGroove && (
+                <div className="p-2.5 rounded-xl bg-zinc-950/50 border border-zinc-800 flex items-start gap-2">
+                  <Sparkles className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Swing / Groove</span>
+                    <span className="font-semibold text-zinc-100">{musicalStyle.swingGroove}</span>
+                  </div>
+                </div>
+              )}
+
+              {musicalStyle.padraoBateria && (
+                <div className="p-2.5 rounded-xl bg-zinc-950/50 border border-zinc-800 col-span-2 flex items-start gap-2">
+                  <Sliders className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Padrão de Bateria</span>
+                    <span className="font-medium text-zinc-200">{musicalStyle.padraoBateria}</span>
+                  </div>
+                </div>
+              )}
+
+              {musicalStyle.linhaBaixo && (
+                <div className="p-2.5 rounded-xl bg-zinc-950/50 border border-zinc-800 col-span-2 flex items-start gap-2">
+                  <Sliders className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Linha de Baixo / Sub</span>
+                    <span className="font-medium text-zinc-200">{musicalStyle.linhaBaixo}</span>
+                  </div>
+                </div>
+              )}
+
+              {musicalStyle.estruturaBatida && (
+                <div className="p-2.5 rounded-xl bg-zinc-950/50 border border-zinc-800 col-span-2 flex items-start gap-2">
+                  <Bookmark className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Estrutura da Batida</span>
+                    <span className="font-medium text-zinc-200">{musicalStyle.estruturaBatida}</span>
+                  </div>
+                </div>
+              )}
+
+              {musicalStyle.samplesSintetizadores && (
+                <div className="p-2.5 rounded-xl bg-zinc-950/50 border border-zinc-800 col-span-2 flex items-start gap-2">
+                  <Layers className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Samples & Sintetizadores</span>
+                    <span className="font-medium text-zinc-200">{musicalStyle.samplesSintetizadores}</span>
+                  </div>
+                </div>
+              )}
+
               {musicalStyle.esquemaRimas && (
                 <div className="p-2.5 rounded-xl bg-zinc-950/50 border border-zinc-800 col-span-2 flex items-start gap-2">
                   <Bookmark className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />

@@ -158,8 +158,8 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
             className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/60 hover:bg-zinc-800/90 border border-zinc-800 hover:border-purple-500/40 text-left transition-all text-xs group cursor-pointer disabled:opacity-50"
           >
             <div>
-              <p className="font-semibold text-zinc-200 group-hover:text-purple-300">Synthwave 80s</p>
-              <p className="text-[11px] text-zinc-400">Eletrónico · Sintetizadores</p>
+              <p className="font-semibold text-zinc-200 group-hover:text-purple-300">Synthwave Beat</p>
+              <p className="text-[11px] text-zinc-400">Batida eletrónica · 80s</p>
             </div>
             {isGeneratingSample === 'synthwave' ? (
               <span className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
@@ -192,8 +192,8 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
             className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/60 hover:bg-zinc-800/90 border border-zinc-800 hover:border-purple-500/40 text-left transition-all text-xs group cursor-pointer disabled:opacity-50"
           >
             <div>
-              <p className="font-semibold text-zinc-200 group-hover:text-purple-300">Lo-Fi Melancólico</p>
-              <p className="text-[11px] text-zinc-400">Jazz chords · Noturno</p>
+              <p className="font-semibold text-zinc-200 group-hover:text-purple-300">Batida Lo-Fi</p>
+              <p className="text-[11px] text-zinc-400">Beat instrumental · Jazz</p>
             </div>
             {isGeneratingSample === 'lofi' ? (
               <span className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />

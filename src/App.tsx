@@ -18,6 +18,7 @@ import { AudioUploader } from './components/AudioUploader';
 import { AudioPlayer } from './components/AudioPlayer';
 import { LyricsCard } from './components/LyricsCard';
 import { StyleCard } from './components/StyleCard';
+import { YouTubeSeoCard } from './components/YouTubeSeoCard';
 import { ProcessingState } from './components/ProcessingState';
 import { AudioFileInfo, SongAlternativeResult } from './types';
 
@@ -116,6 +117,9 @@ export default function App() {
         letra: data.letra,
         estilo: data.estilo,
         idiomaLetra: data.idiomaLetra,
+        isInstrumental: Boolean(data.isInstrumental),
+        letraCriada: false,
+        youtubeSeo: data.youtubeSeo,
       });
 
       // Scroll smoothly to results
@@ -132,6 +136,62 @@ export default function App() {
       );
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const [isGeneratingLyricsForBeat, setIsGeneratingLyricsForBeat] = useState(false);
+
+  const handleCreateLyricsForBeat = async (idioma: 'pt' | 'en') => {
+    if (!audioInfo || !result) return;
+    setIsGeneratingLyricsForBeat(true);
+    setErrorMessage(null);
+
+    try {
+      const base64Data = await fileToBase64(audioInfo.file);
+      let mimeType = audioInfo.file.type;
+      if (!mimeType || mimeType === 'application/octet-stream') {
+        mimeType = audioInfo.name.toLowerCase().endsWith('.wav') ? 'audio/wav' : 'audio/mp3';
+      }
+
+      const res = await fetch('/api/create-lyrics-for-beat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          audioBase64: base64Data,
+          mimeType,
+          beatStyle: result.estilo,
+          idioma,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao compor letra para a batida.');
+      }
+
+      setResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              letra: data.letra,
+              idiomaLetra: data.idiomaLetra,
+              letraCriada: true,
+              youtubeSeo: data.youtubeSeo || (prev.youtubeSeo ? {
+                ...prev.youtubeSeo,
+                descricao: prev.youtubeSeo.descricao.includes('Instrumental: sem letra')
+                  ? prev.youtubeSeo.descricao.replace('Instrumental: sem letra', `\n--- LETRA ---\n${data.letra}`)
+                  : `${prev.youtubeSeo.descricao}\n\n--- LETRA ---\n${data.letra}`.slice(0, 5000),
+              } : undefined),
+            }
+          : null
+      );
+    } catch (err: any) {
+      console.error('Erro ao compor letra para batida:', err);
+      setErrorMessage(err.message || 'Falha ao compor letra para a batida.');
+    } finally {
+      setIsGeneratingLyricsForBeat(false);
     }
   };
 
@@ -309,7 +369,14 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
               {/* Card 1: Letra alternativa */}
               <div className="h-full">
-                <LyricsCard lyrics={result.letra} idiomaLetra={result.idiomaLetra} />
+                <LyricsCard
+                  lyrics={result.letra}
+                  idiomaLetra={result.idiomaLetra}
+                  isInstrumental={result.isInstrumental}
+                  letraCriada={result.letraCriada}
+                  onGenerateLyricsForBeat={handleCreateLyricsForBeat}
+                  isGeneratingLyricsForBeat={isGeneratingLyricsForBeat}
+                />
               </div>
 
               {/* Card 2: Estilo musical */}
@@ -317,6 +384,16 @@ export default function App() {
                 <StyleCard styleData={result.estilo} />
               </div>
             </div>
+
+            {/* Card 3: Pacote YouTube SEO */}
+            {result.youtubeSeo && (
+              <div className="pt-2">
+                <YouTubeSeoCard
+                  seo={result.youtubeSeo}
+                  idiomaLetra={result.idiomaLetra}
+                />
+              </div>
+            )}
           </section>
         )}
       </main>

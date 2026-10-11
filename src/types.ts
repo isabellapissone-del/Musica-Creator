@@ -12,12 +12,37 @@ export interface MusicalStyle {
   producao?: string;
   esquemaRimas?: string;
   estruturaMetrica?: string;
+  // Campos específicos para modo instrumental / batida
+  compasso?: string;
+  swingGroove?: string;
+  padraoBateria?: string;
+  linhaBaixo?: string;
+  samplesSintetizadores?: string;
+  estruturaBatida?: string;
+}
+
+export interface YouTubeSeoPackage {
+  titulos: string[]; // 5 opções (máx 70 caracteres cada)
+  descricao: string; // máx 5000 caracteres
+  tags: string; // lista separada por vírgulas (máx 500 caracteres)
+  hashtags: string[]; // 3 a 5
+  textoMiniatura: string[]; // 3 opções com máx 4 palavras cada
+  capitulos?: string[]; // marcas de tempo
+  comentarioFixado: string; // pergunta para incentivar comentários
+  palavrasChave: {
+    principal: string;
+    secundarias: string[];
+    caudaLonga: string[];
+  };
 }
 
 export interface SongAlternativeResult {
   letra: string;
   estilo: MusicalStyle | string;
   idiomaLetra?: string;
+  isInstrumental?: boolean;
+  letraCriada?: boolean;
+  youtubeSeo?: YouTubeSeoPackage;
 }
 
 export interface AudioFileInfo {

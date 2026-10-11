@@ -23,12 +23,17 @@ export function formatStyleText(style: MusicalStyle | string): string {
 
   const details: string[] = [];
   if (style.bpm) details.push(`BPM: ${style.bpm}`);
+  if (style.compasso) details.push(`Compasso: ${style.compasso}`);
   if (style.tom) details.push(`Tom: ${style.tom}`);
   if (style.genero) details.push(`Género: ${style.genero}`);
+  if (style.swingGroove) details.push(`Groove: ${style.swingGroove}`);
+  if (style.padraoBateria) details.push(`Bateria: ${style.padraoBateria}`);
+  if (style.linhaBaixo) details.push(`Baixo: ${style.linhaBaixo}`);
   if (style.emocao) details.push(`Emoção: ${style.emocao}`);
   if (style.tipoVoz) details.push(`Voz: ${style.tipoVoz}`);
   if (style.atmosfera) details.push(`Atmosfera: ${style.atmosfera}`);
   if (style.producao) details.push(`Produção: ${style.producao}`);
+  if (style.estruturaBatida) details.push(`Estrutura: ${style.estruturaBatida}`);
   if (style.instrumentos && style.instrumentos.length > 0) {
     details.push(`Instrumentos: ${style.instrumentos.join(', ')}`);
   }

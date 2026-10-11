@@ -8,11 +8,16 @@ export interface MusicalStyle {
   tom?: string;
   instrumentos?: string[];
   tipoVoz?: string;
+  atmosfera?: string;
+  producao?: string;
+  esquemaRimas?: string;
+  estruturaMetrica?: string;
 }
 
 export interface SongAlternativeResult {
   letra: string;
   estilo: MusicalStyle | string;
+  idiomaLetra?: string;
 }
 
 export interface AudioFileInfo {

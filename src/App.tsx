@@ -115,6 +115,7 @@ export default function App() {
       setResult({
         letra: data.letra,
         estilo: data.estilo,
+        idiomaLetra: data.idiomaLetra,
       });
 
       // Scroll smoothly to results
@@ -181,8 +182,8 @@ export default function App() {
             </span>
           </h2>
           <p className="text-sm sm:text-base text-zinc-400 leading-relaxed">
-            Envia uma faixa em MP3 ou WAV. A inteligência artificial ouve a música, identifica o
-            tom, BPM, instrumentos e emoção, e compõe uma letra original inédita com descrição de estilo.
+            Envia uma faixa em MP3 ou WAV. A inteligência artificial descreve o estilo com máxima fidelidade
+            acústica para recriação exata e compõe uma letra nova que encaixa na mesma melodia, métrica e esquema de rimas.
           </p>
         </div>
 
@@ -308,7 +309,7 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
               {/* Card 1: Letra alternativa */}
               <div className="h-full">
-                <LyricsCard lyrics={result.letra} />
+                <LyricsCard lyrics={result.letra} idiomaLetra={result.idiomaLetra} />
               </div>
 
               {/* Card 2: Estilo musical */}

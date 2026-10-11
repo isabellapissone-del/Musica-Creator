@@ -4,10 +4,11 @@ import { Sparkles, Music2, Cpu } from 'lucide-react';
 export const ProcessingState: React.FC = () => {
   const steps = [
     'A enviar o ficheiro de áudio para o modelo Gemini...',
-    'A ouvir atentamente: identificando tema, emoção, género e tom musical...',
-    'A calcular o tempo aproximado (BPM) e texturas dos instrumentos...',
-    'A compor uma letra 100% original e inédita com [Verso], [Refrão] e [Ponte]...',
-    'A sintetizar a descrição do estilo musical e etiquetas...',
+    'A analisar estilo sonoro: género, BPM exato, tom, instrumentos e tipo de voz...',
+    'A examinar atmosfera, mistura de áudio e técnicas de produção sonora...',
+    'A mapear a melodia original: número de versos, cadência de sílabas e esquema de rimas...',
+    'A detetar o idioma da canção e a compor a letra para encaixe milimétrico na melodia...',
+    'A gerar etiquetas hiper-fidelizadas para recriação do som idêntico...',
   ];
 
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
@@ -15,7 +16,7 @@ export const ProcessingState: React.FC = () => {
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentStepIdx((prev) => (prev < steps.length - 1 ? prev + 1 : prev));
-    }, 4500);
+    }, 3800);
 
     return () => clearInterval(timer);
   }, [steps.length]);
@@ -52,7 +53,7 @@ export const ProcessingState: React.FC = () => {
       {/* Status Title */}
       <h3 className="font-display text-lg sm:text-xl font-bold text-zinc-100 mb-2 flex items-center justify-center gap-2">
         <Sparkles className="w-5 h-5 text-purple-400 animate-spin" />
-        A criar versão alternativa
+        A criar versão alternativa de alta fidelidade
       </h3>
 
       {/* Active Step Indicator */}
@@ -63,7 +64,7 @@ export const ProcessingState: React.FC = () => {
       {/* Discrete note */}
       <div className="mt-4 pt-4 border-t border-zinc-800/80 flex items-center justify-center gap-2 text-xs text-zinc-400">
         <Cpu className="w-3.5 h-3.5 text-purple-400/80" />
-        <span>O modelo Gemini ouve o áudio diretamente sem bibliotecas externas</span>
+        <span>Análise multimodal nativa em Português de Portugal com modelo Gemini</span>
       </div>
     </div>
   );

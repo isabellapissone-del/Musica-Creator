@@ -85,38 +85,57 @@ app.post('/api/create-alternative', async (req, res) => {
       },
     });
 
-    const systemInstruction = `És um produtor musical consagrado, compositor lírico e especialista em análise de áudio.
-A tua missão é ouvir o ficheiro de áudio de uma música existente fornecido e:
-1. OUVIR E IDENTIFICAR minuciosamente:
-   - Tema lírico / conceptual
-   - Emoção e vibração predominante (ex: melancolia nostálgica, euforia noturna, revolta íntima)
-   - Género e subgéneros musicais (ex: Synthpop anos 80, Indie Rock, Afrobeat, Dream Pop)
-   - Tempo aproximado em BPM (ex: "122 BPM")
-   - Tom musical / escala (ex: "Lá menor (Am)", "Fá maior (F)")
-   - Instrumentos e texturas identificados (ex: sintetizadores analógicos, guitarra acústica fingerpicking, bateria 808, cordas cinematográficas)
-   - Estrutura musical percibida
-   - Tipo e características da voz (ex: voz feminina etérea com reverberação, voz masculina rouca e intimista, ou instrumental)
+    const systemInstruction = `És um produtor musical consagrado, engenheiro de som e letrista profissional de altíssima precisão métrica.
+A tua missão é ouvir com a máxima atenção o ficheiro de áudio da música original fornecida e gerar uma versão alternativa em texto com fidelidade milimétrica às características musicais e métricas da obra.
 
-2. GERAR UMA VERSÃO ALTERNATIVA EM TEXTO:
-   a) "letra": Uma letra 100% original e inédita com a mesma temática e emoção da música ouvida.
-      - Deve ser estritamente organizada nas seguintes secções:
-        [Verso]
-        [Refrão]
-        [Verso 2]
-        [Refrão]
-        [Ponte]
-      - Podes acrescentar um [Refrão Final] ou [Outro] no final se enriquecer a composição.
-      - REGRA FUNDAMENTAL: NUNCA copies frases, rimas ou linhas da letra original. Escreve uma obra inteiramente nova inspirada pelo espírito e sentimento da faixa.
-      - A letra deve estar em Português poético, cativante e pronto para ser cantado.
+1. IDIOMA E REGRA LINGUÍSTICA INEGOCIÁVEL:
+   - A DESCRIÇÃO DO ESTILO MUSICAL ("estilo"), todos os seus detalhes e campos explicativos DEVEM FICAR SEMPRE EM PORTUGUÊS DE PORTUGAL (vocabulário europeu como "ficheiro", "ecrã", "bateria", "eco", sintaxe e ortografia de Portugal, nunca brasileira), independentemente do idioma da música original.
+   - IDIOMA DA LETRA ALTERNATIVA: Deteta o idioma cantado na música original:
+     * Se for Português: escreve a letra obrigatoriamente em Português de Portugal (vocabulário, ortografia e expressões europeias, nunca brasileiras).
+     * Se for Inglês: escreve a letra em Inglês internacional neutro, fluído e poético, sem gíria regional.
+     * Se for outro idioma (ex: Francês, Espanhol, Italiano, Alemão, etc.): mantém exatamente esse idioma original da canção.
+     * Se a música for estritamente instrumental: escreve a letra em Português de Portugal.
+   - Devolve no campo "idiomaLetra" o nome do idioma detetado e utilizado (ex: "Português (Portugal)", "Inglês (Internacional)", "Francês", "Espanhol", etc.).
 
-   b) "estilo":
-      - "descricao": Um parágrafo curto, elegante e envolvente descrevendo a sonoridade da faixa alternativa inspirada, os arranjos e a atmosfera musical.
-      - "tags": Uma lista de etiquetas curtas e diretas com as características essenciais (por exemplo: ["Pop eletrónico", "120 BPM", "Melancólico", "Sintetizadores analógicos", "Voz feminina emotiva"]).
-      - Detalhes musicais individuais para os campos: "tema", "emocao", "genero", "bpm", "tom", "instrumentos", "tipoVoz".
+2. ANÁLISE E DESCRIÇÃO DO ESTILO MUSICAL COM MÁXIMA FIDELIDADE (SEMPRE EM PORTUGUÊS DE PORTUGAL):
+   - Descreve o estilo da música original com o máximo de fidelidade possível, cobrindo:
+     * Género musical principal e subgéneros estilísticos minuciosos.
+     * BPM exato ou estimado com precisão (ex: "124 BPM").
+     * Tom musical e escala (ex: "Fá menor / Fm", "Dó Maior / C").
+     * Instrumentação minuciosa (especifica tipos de instrumentos, timbres, sintetizadores, guitarras acústicas/elétricas, percussão, baixo e linhas melódicas).
+     * Tipo de voz e performance vocal (tessitura, colocação, dinâmica, respirações, técnica vocal, se masculina, feminina, dueto ou instrumental).
+     * Atmosfera e ambiência sonora (ex: "cinematográfica e melancólica, nostálgica, envolvente").
+     * Produção e engenharia de áudio (mixagem, posicionamento estéreo, reverberação, delays de fita, compressão, saturação harmónica, estética analógica ou digital limpa).
+   - "tags": Gera uma lista rica e especializada de etiquetas de estilo que permitam a um produtor musical ou ferramenta de síntese de áudio (como Suno, Udio, etc.) recriar o som de forma quase idêntica (exemplo: ["indie pop nostálgico", "116 BPM", "Lá menor (Am)", "guitarra elétrica com chorus límpido", "baixo elétrico com palheta", "bateria acústica quente", "voz feminina intimista e sussurrada com delay", "atmosfera melancólica de outono", "produção analógica vintage"]).
 
-Devolve apenas o JSON estritamente conforme o esquema fornecido.`;
+3. CRIAÇÃO DA NOVA LETRA COM ENCAIXE MELÓDICO E MÉTRICO PERFEITO:
+   - Escreve uma letra nova que siga DE MUITO PERTO a original em:
+     * Idioma: segundo a regra linguística acima.
+     * Tema central e tom lírico da música.
+     * Emoção e intensidade dramática a cada momento.
+     * Narrativa e progressão da história ao longo das estrofes.
+     * Número exato de versos por secção:
+       [Verso]
+       [Refrão]
+       [Verso 2]
+       [Refrão]
+       [Ponte]
+       (podes incluir [Refrão Final] ou [Outro] se a música original tiver essa estrutura).
+     * Número aproximado de sílabas métricas por verso, para que a nova letra encaixe com perfeição na melodia original (mesmo compasso rítmico, pausas e acentuações tónicas).
+     * Esquema de rimas fiel ao da canção original (ex: AABB, ABAB, ABCB).
+   - REGRAS FUNDAMENTAIS E INEGOCIÁVEIS:
+     * Usa palavras, imagens poéticas e metáforas completamente diferentes da música original.
+     * NUNCA copies frases, expressões ou linhas da letra original.
 
-    const userPrompt = `Ouve o ficheiro de áudio em anexo (${fileName || 'música'}). Analisa a canção com precisão e gera a versão alternativa com letra original e descrição do estilo musical.`;
+Devolve estritamente o JSON com os campos "letra", "estilo" e "idiomaLetra".`;
+
+    const userPrompt = `Ouve atentamente a música (${fileName || 'faixa de áudio'}). 
+1. Descreve o estilo da música original sempre em Português de Portugal com o máximo de fidelidade possível (género, BPM, tom, instrumentos, tipo de voz, atmosfera, produção) e gera etiquetas que permitam recriar o som quase idêntico.
+2. Deteta o idioma da música original e escreve a letra alternativa nesse mesmo idioma:
+   - Se for português, usa português de Portugal (vocabulário, ortografia e expressões europeias, nunca brasileiras).
+   - Se for inglês, usa inglês internacional neutro, sem gíria regional.
+   - Se for outro idioma, mantém o idioma original da canção.
+3. Escreve a letra nova para seguir de muito perto a original em tema, emoção, narrativa, número de versos por secção, número aproximado de sílabas por verso e esquema de rimas, para que encaixe na mesma melodia cantada, usando palavras e imagens diferentes e sem copiar frases da original.`;
 
     // Audio MIME type mapping for Gemini
     let geminiMime = normalizedMime;
@@ -145,33 +164,41 @@ Devolve apenas o JSON estritamente conforme o esquema fornecido.`;
         responseSchema: {
           type: Type.OBJECT,
           properties: {
+            idiomaLetra: {
+              type: Type.STRING,
+              description: 'Idioma detetado na música e aplicado à letra (ex: "Português (Portugal)", "Inglês (Internacional)", "Francês", etc.).',
+            },
             letra: {
               type: Type.STRING,
-              description: 'Letra alternativa totalmente original organizada com [Verso], [Refrão], [Verso 2], [Refrão] e [Ponte].',
+              description: 'Letra alternativa totalmente original no idioma detetado da música, estruturada em [Verso], [Refrão], [Verso 2], [Refrão], [Ponte], que segue de muito perto o tema, emoção, narrativa, número de versos por secção, contagem de sílabas métricas e esquema de rimas da canção original.',
             },
             estilo: {
               type: Type.OBJECT,
               properties: {
                 descricao: {
                   type: Type.STRING,
-                  description: 'Parágrafo curto descrevendo o estilo musical, arranjo e vibração.',
+                  description: 'Parágrafo detalhado sempre em Português de Portugal descrevendo o estilo da música original com o máximo de fidelidade (género, BPM, tom, instrumentos, tipo de voz, atmosfera e produção).',
                 },
                 tags: {
                   type: Type.ARRAY,
                   items: { type: Type.STRING },
-                  description: 'Lista de etiquetas essenciais (ex: pop eletrónico, 120 BPM, melancólico, sintetizadores, voz feminina).',
+                  description: 'Etiquetas de estilo precisas e minuciosas sempre em Português de Portugal que permitem recriar o som quase idêntico.',
                 },
-                tema: { type: Type.STRING, description: 'Tema identificado' },
-                emocao: { type: Type.STRING, description: 'Emoção predominante' },
-                genero: { type: Type.STRING, description: 'Género musical' },
-                bpm: { type: Type.STRING, description: 'Tempo aproximado em BPM' },
-                tom: { type: Type.STRING, description: 'Tom ou tonalidade musical' },
+                tema: { type: Type.STRING, description: 'Tema lírico e conceptual identificado (em Português de Portugal)' },
+                emocao: { type: Type.STRING, description: 'Emoção e vibração predominante (em Português de Portugal)' },
+                genero: { type: Type.STRING, description: 'Género musical e subgéneros (em Português de Portugal)' },
+                bpm: { type: Type.STRING, description: 'Tempo / BPM preciso' },
+                tom: { type: Type.STRING, description: 'Tom ou tonalidade musical (ex: Fá menor)' },
                 instrumentos: {
                   type: Type.ARRAY,
                   items: { type: Type.STRING },
-                  description: 'Instrumentos e timbres principais',
+                  description: 'Instrumentos, texturas e timbres identificados (em Português de Portugal)',
                 },
-                tipoVoz: { type: Type.STRING, description: 'Tipo e características da voz' },
+                tipoVoz: { type: Type.STRING, description: 'Tipo, timbre e características da voz (em Português de Portugal)' },
+                atmosfera: { type: Type.STRING, description: 'Atmosfera e ambiência sonora (em Português de Portugal)' },
+                producao: { type: Type.STRING, description: 'Técnicas de produção, mixagem e efeitos de som (em Português de Portugal)' },
+                esquemaRimas: { type: Type.STRING, description: 'Esquema de rimas seguido (ex: ABAB)' },
+                estruturaMetrica: { type: Type.STRING, description: 'Métrica silábica e cadência para encaixe na melodia' },
               },
               required: ['descricao', 'tags'],
             },

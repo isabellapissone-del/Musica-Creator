@@ -10,11 +10,11 @@ import {
   Mic,
   Sliders,
   Sparkles,
-  Wand2,
   Cpu,
   Bookmark,
 } from 'lucide-react';
 import { MusicalStyle } from '../types';
+import { formatStyleText, MAX_STYLE_LENGTH } from '../utils/styleFormatter';
 
 interface StyleCardProps {
   styleData: MusicalStyle | string;
@@ -30,35 +30,13 @@ export const StyleCard: React.FC<StyleCardProps> = ({ styleData }) => {
   const tags = isObject && Array.isArray(styleData.tags) ? styleData.tags : [];
   const musicalStyle = isObject ? (styleData as MusicalStyle) : null;
 
-  const getCopyText = () => {
-    if (typeof styleData === 'string') return styleData;
-    let text = `[ESTILO MUSICAL - MÁXIMA FIDELIDADE]\n${styleData.descricao || ''}\n\n`;
-    if (styleData.tags && styleData.tags.length > 0) {
-      text += `Etiquetas para recriação: ${styleData.tags.join(', ')}\n\n`;
-    }
-    const details = [];
-    if (styleData.bpm) details.push(`BPM / Tempo: ${styleData.bpm}`);
-    if (styleData.tom) details.push(`Tom / Escala: ${styleData.tom}`);
-    if (styleData.genero) details.push(`Género: ${styleData.genero}`);
-    if (styleData.emocao) details.push(`Emoção: ${styleData.emocao}`);
-    if (styleData.tipoVoz) details.push(`Tipo de voz: ${styleData.tipoVoz}`);
-    if (styleData.atmosfera) details.push(`Atmosfera: ${styleData.atmosfera}`);
-    if (styleData.producao) details.push(`Produção & Mistura: ${styleData.producao}`);
-    if (styleData.instrumentos && styleData.instrumentos.length > 0) {
-      details.push(`Instrumentos: ${styleData.instrumentos.join(', ')}`);
-    }
-    if (styleData.esquemaRimas) details.push(`Esquema de rimas: ${styleData.esquemaRimas}`);
-    if (styleData.estruturaMetrica) details.push(`Métrica: ${styleData.estruturaMetrica}`);
-
-    if (details.length > 0) {
-      text += `Detalhes de produção:\n- ${details.join('\n- ')}`;
-    }
-    return text.trim();
-  };
+  const styleText = formatStyleText(styleData);
+  const charCount = styleText.length;
+  const isOverLimit = charCount > MAX_STYLE_LENGTH;
 
   const handleCopyAll = async () => {
     try {
-      await navigator.clipboard.writeText(getCopyText());
+      await navigator.clipboard.writeText(styleText);
       setCopiedAll(true);
       setTimeout(() => setCopiedAll(false), 2000);
     } catch (err) {
@@ -81,42 +59,56 @@ export const StyleCard: React.FC<StyleCardProps> = ({ styleData }) => {
   return (
     <div className="bg-zinc-900/90 border border-zinc-800 hover:border-purple-500/30 rounded-2xl p-5 sm:p-6 shadow-xl shadow-purple-950/10 flex flex-col h-full transition-all">
       {/* Header */}
-      <div className="flex items-center justify-between pb-4 mb-4 border-b border-zinc-800">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-4 mb-4 border-b border-zinc-800">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
             <Radio className="w-4 h-4" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h3 className="font-display font-semibold text-zinc-100 text-base sm:text-lg">
               Estilo musical
             </h3>
-            <p className="text-xs text-zinc-400">
-              Fidelidade sonora máxima para recriação exata
+            <p className="text-xs text-zinc-400 truncate">
+              Fidelidade sonora para recriação exata
             </p>
           </div>
         </div>
 
-        <button
-          onClick={handleCopyAll}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-            copiedAll
-              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-              : 'bg-zinc-800 hover:bg-zinc-700/80 text-zinc-200 border border-zinc-700/60 hover:text-purple-300 hover:border-purple-500/40'
-          }`}
-          aria-label="Copiar estilo"
-        >
-          {copiedAll ? (
-            <>
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Copiado!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5" />
-              <span>Copiar estilo</span>
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Character counter (e.g. "812 / 950"), turns red if over limit */}
+          <span
+            className={`text-xs font-mono font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
+              isOverLimit
+                ? 'text-red-400 bg-red-950/70 border-red-500/70 font-bold animate-pulse'
+                : 'text-zinc-400 bg-zinc-950/60 border-zinc-800'
+            }`}
+            title={`Limite: ${charCount} / ${MAX_STYLE_LENGTH} caracteres`}
+          >
+            {charCount} / {MAX_STYLE_LENGTH}
+          </span>
+
+          <button
+            onClick={handleCopyAll}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              copiedAll
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : 'bg-zinc-800 hover:bg-zinc-700/80 text-zinc-200 border border-zinc-700/60 hover:text-purple-300 hover:border-purple-500/40'
+            }`}
+            aria-label="Copiar estilo"
+          >
+            {copiedAll ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Copiado!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copiar estilo</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Content */}

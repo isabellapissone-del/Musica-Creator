@@ -8,7 +8,7 @@ export const ProcessingState: React.FC = () => {
     'A examinar atmosfera, mistura de áudio e técnicas de produção sonora...',
     'A mapear a melodia original: número de versos, cadência de sílabas e esquema de rimas...',
     'A detetar o idioma da canção e a compor a letra para encaixe milimétrico na melodia...',
-    'A gerar etiquetas hiper-fidelizadas para recriação do som idêntico...',
+    'A gerar etiquetas hiper-fidelizadas e a confirmar limites de caracteres (máx. 4500 letra, máx. 950 estilo)...',
   ];
 
   const [currentStepIdx, setCurrentStepIdx] = useState(0);

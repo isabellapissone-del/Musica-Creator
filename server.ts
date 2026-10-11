@@ -127,6 +127,11 @@ A tua missão é ouvir com a máxima atenção o ficheiro de áudio da música o
      * Usa palavras, imagens poéticas e metáforas completamente diferentes da música original.
      * NUNCA copies frases, expressões ou linhas da letra original.
 
+4. LIMITES OBRIGATÓRIOS DE CARACTERES (RIGOROSAMENTE EXIGIDOS):
+   - "letra": DEVE TER NO MÁXIMO 4500 CARACTERES (incluindo as marcações de secção [Verso], [Refrão], [Ponte], quebras de linha e pontuação).
+   - "estilo": O estilo musical (descrição, etiquetas e parâmetros somados) DEVE TER NO MÁXIMO 950 CARACTERES.
+   - ANTES DE DEVOLVER: Conta os caracteres de cada campo e confirma que cumprem rigorosamente estes limites. Se ultrapassar, resume e reescreve até caber.
+
 Devolve estritamente o JSON com os campos "letra", "estilo" e "idiomaLetra".`;
 
     const userPrompt = `Ouve atentamente a música (${fileName || 'faixa de áudio'}). 
@@ -135,7 +140,8 @@ Devolve estritamente o JSON com os campos "letra", "estilo" e "idiomaLetra".`;
    - Se for português, usa português de Portugal (vocabulário, ortografia e expressões europeias, nunca brasileiras).
    - Se for inglês, usa inglês internacional neutro, sem gíria regional.
    - Se for outro idioma, mantém o idioma original da canção.
-3. Escreve a letra nova para seguir de muito perto a original em tema, emoção, narrativa, número de versos por secção, número aproximado de sílabas por verso e esquema de rimas, para que encaixe na mesma melodia cantada, usando palavras e imagens diferentes e sem copiar frases da original.`;
+3. Escreve a letra nova para seguir de muito perto a original em tema, emoção, narrativa, número de versos por secção, número aproximado de sílabas por verso e esquema de rimas, para que encaixe na mesma melodia cantada, usando palavras e imagens diferentes e sem copiar frases da original.
+4. CUMPRE RIGOROSAMENTE OS LIMITES DE CARACTERES: A letra deve ter no máximo 4500 caracteres e o estilo musical no máximo 950 caracteres. Conta os caracteres e resume antes de devolver.`;
 
     // Audio MIME type mapping for Gemini
     let geminiMime = normalizedMime;
@@ -225,6 +231,130 @@ Devolve estritamente o JSON com os campos "letra", "estilo" e "idiomaLetra".`;
         throw new Error('Falha ao interpretar a resposta JSON do modelo.');
       }
     }
+
+    // Helper to calculate total character count of the style text representation
+    const formatStyleForCount = (style: any): string => {
+      if (!style) return '';
+      if (typeof style === 'string') return style.trim();
+      const parts: string[] = [];
+      if (style.descricao) parts.push(style.descricao.trim());
+      if (style.tags && Array.isArray(style.tags) && style.tags.length > 0) {
+        parts.push(`Etiquetas: ${style.tags.join(', ')}`);
+      }
+      const details: string[] = [];
+      if (style.bpm) details.push(`BPM: ${style.bpm}`);
+      if (style.tom) details.push(`Tom: ${style.tom}`);
+      if (style.genero) details.push(`Género: ${style.genero}`);
+      if (style.emocao) details.push(`Emoção: ${style.emocao}`);
+      if (style.tipoVoz) details.push(`Voz: ${style.tipoVoz}`);
+      if (style.atmosfera) details.push(`Atmosfera: ${style.atmosfera}`);
+      if (style.producao) details.push(`Produção: ${style.producao}`);
+      if (style.instrumentos && Array.isArray(style.instrumentos) && style.instrumentos.length > 0) {
+        details.push(`Instrumentos: ${style.instrumentos.join(', ')}`);
+      }
+      if (details.length > 0) {
+        parts.push(`Parâmetros: ${details.join(' · ')}`);
+      }
+      return parts.join('\n\n').trim();
+    };
+
+    const MAX_LETRA_CHARS = 4500;
+    const MAX_ESTILO_CHARS = 950;
+
+    let currentLetra = parsedResult.letra || '';
+    let currentEstilo = parsedResult.estilo;
+    let styleText = formatStyleForCount(currentEstilo);
+
+    // If either exceeds the limit, rewrite and summarize
+    if (currentLetra.length > MAX_LETRA_CHARS || styleText.length > MAX_ESTILO_CHARS) {
+      console.log(`Excedeu limites (Letra: ${currentLetra.length}/${MAX_LETRA_CHARS}, Estilo: ${styleText.length}/${MAX_ESTILO_CHARS}). A resumir...`);
+      try {
+        const rewriteRes = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [
+            {
+              text: `O resultado anterior ultrapassou os limites estritos de caracteres.
+LIMITES OBRIGATÓRIOS:
+1. "letra": MÁXIMO 4500 CARACTERES (atualmente: ${currentLetra.length}). Resume a letra mantendo as secções [Verso], [Refrão], [Ponte], métrica e melodia, garantindo estritamente menos de 4500 caracteres.
+2. "estilo": MÁXIMO 950 CARACTERES (atualmente: ${styleText.length}). Resume a descrição e parâmetros em Português de Portugal para garantir estritamente menos de 950 caracteres no total.
+
+CONTEÚDO ANTERIOR:
+Letra:
+${currentLetra}
+
+Estilo:
+${JSON.stringify(currentEstilo)}
+
+Devolve o JSON com "letra", "estilo" e "idiomaLetra" garantindo o cumprimento absoluto dos limites.`,
+            },
+          ],
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                idiomaLetra: { type: Type.STRING },
+                letra: { type: Type.STRING },
+                estilo: {
+                  type: Type.OBJECT,
+                  properties: {
+                    descricao: { type: Type.STRING },
+                    tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    bpm: { type: Type.STRING },
+                    tom: { type: Type.STRING },
+                    genero: { type: Type.STRING },
+                    emocao: { type: Type.STRING },
+                    tipoVoz: { type: Type.STRING },
+                    atmosfera: { type: Type.STRING },
+                    producao: { type: Type.STRING },
+                    instrumentos: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  },
+                  required: ['descricao', 'tags'],
+                },
+              },
+              required: ['letra', 'estilo'],
+            },
+          },
+        });
+
+        if (rewriteRes.text) {
+          const reParsed = JSON.parse(rewriteRes.text);
+          if (reParsed.letra) currentLetra = reParsed.letra;
+          if (reParsed.estilo) currentEstilo = reParsed.estilo;
+          if (reParsed.idiomaLetra) parsedResult.idiomaLetra = reParsed.idiomaLetra;
+        }
+      } catch (err) {
+        console.warn('Erro ao condensar com modelo:', err);
+      }
+    }
+
+    // Safety fallback: guarantee 100% compliance with character limits
+    if (currentLetra.length > MAX_LETRA_CHARS) {
+      let cutIdx = currentLetra.lastIndexOf('\n', MAX_LETRA_CHARS);
+      if (cutIdx === -1 || cutIdx < MAX_LETRA_CHARS - 300) {
+        cutIdx = currentLetra.lastIndexOf('.', MAX_LETRA_CHARS);
+      }
+      if (cutIdx === -1 || cutIdx < 2000) cutIdx = MAX_LETRA_CHARS;
+      currentLetra = currentLetra.slice(0, cutIdx).trim();
+    }
+
+    let finalStyleLen = formatStyleForCount(currentEstilo).length;
+    if (finalStyleLen > MAX_ESTILO_CHARS) {
+      if (typeof currentEstilo === 'object' && currentEstilo !== null) {
+        const excess = finalStyleLen - MAX_ESTILO_CHARS;
+        const desc = currentEstilo.descricao || '';
+        if (desc.length > excess + 40) {
+          currentEstilo.descricao = desc.slice(0, desc.length - excess - 10).trim() + '...';
+        } else if (Array.isArray(currentEstilo.tags) && currentEstilo.tags.length > 4) {
+          currentEstilo.tags = currentEstilo.tags.slice(0, 4);
+        }
+      } else if (typeof currentEstilo === 'string') {
+        currentEstilo = currentEstilo.slice(0, MAX_ESTILO_CHARS).trim();
+      }
+    }
+
+    parsedResult.letra = currentLetra;
+    parsedResult.estilo = currentEstilo;
 
     return res.json(parsedResult);
   } catch (error: any) {

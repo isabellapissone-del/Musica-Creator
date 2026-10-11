@@ -9,6 +9,10 @@ interface LyricsCardProps {
 export const LyricsCard: React.FC<LyricsCardProps> = ({ lyrics, idiomaLetra }) => {
   const [copied, setCopied] = useState(false);
 
+  const MAX_LETRA_CHARS = 4500;
+  const charCount = lyrics ? lyrics.length : 0;
+  const isOverLimit = charCount > MAX_LETRA_CHARS;
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(lyrics);
@@ -60,13 +64,13 @@ export const LyricsCard: React.FC<LyricsCardProps> = ({ lyrics, idiomaLetra }) =
   return (
     <div className="bg-zinc-900/90 border border-zinc-800 hover:border-purple-500/30 rounded-2xl p-5 sm:p-6 shadow-xl shadow-purple-950/10 flex flex-col h-full transition-all">
       {/* Header */}
-      <div className="flex items-center justify-between pb-4 mb-4 border-b border-zinc-800">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-4 mb-4 border-b border-zinc-800">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
             <Music className="w-4 h-4" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-display font-semibold text-zinc-100 text-base sm:text-lg">
                 Letra alternativa
               </h3>
@@ -77,33 +81,47 @@ export const LyricsCard: React.FC<LyricsCardProps> = ({ lyrics, idiomaLetra }) =
                 </span>
               )}
             </div>
-            <p className="text-xs text-zinc-400">
-              Métrica, rimas e narrativa alinhadas à melodia original
+            <p className="text-xs text-zinc-400 truncate">
+              Métrica, rimas e melodia original
             </p>
           </div>
         </div>
 
-        <button
-          onClick={handleCopy}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-            copied
-              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-              : 'bg-zinc-800 hover:bg-zinc-700/80 text-zinc-200 border border-zinc-700/60 hover:text-purple-300 hover:border-purple-500/40'
-          }`}
-          aria-label="Copiar letra"
-        >
-          {copied ? (
-            <>
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Copiado!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5" />
-              <span>Copiar letra</span>
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Character counter (e.g. "812 / 4500"), turns red if over limit */}
+          <span
+            className={`text-xs font-mono font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
+              isOverLimit
+                ? 'text-red-400 bg-red-950/70 border-red-500/70 font-bold animate-pulse'
+                : 'text-zinc-400 bg-zinc-950/60 border-zinc-800'
+            }`}
+            title={`Limite: ${charCount} / ${MAX_LETRA_CHARS} caracteres`}
+          >
+            {charCount} / {MAX_LETRA_CHARS}
+          </span>
+
+          <button
+            onClick={handleCopy}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              copied
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : 'bg-zinc-800 hover:bg-zinc-700/80 text-zinc-200 border border-zinc-700/60 hover:text-purple-300 hover:border-purple-500/40'
+            }`}
+            aria-label="Copiar letra"
+          >
+            {copied ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Copiado!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copiar letra</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Guide & Language Note */}

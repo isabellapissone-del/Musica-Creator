@@ -9,10 +9,11 @@ import {
   Sparkles,
   AlertTriangle,
   RefreshCw,
-  Sliders,
   CheckCircle2,
   Wand2,
   Info,
+  Youtube,
+  Zap,
 } from 'lucide-react';
 import { AudioUploader } from './components/AudioUploader';
 import { AudioPlayer } from './components/AudioPlayer';
@@ -21,12 +22,21 @@ import { StyleCard } from './components/StyleCard';
 import { YouTubeSeoCard } from './components/YouTubeSeoCard';
 import { ProcessingState } from './components/ProcessingState';
 import { AudioFileInfo, SongAlternativeResult } from './types';
+import { trimAudioToMax3Minutes } from './utils/audioTrimmer';
 
 export default function App() {
   const [audioInfo, setAudioInfo] = useState<AudioFileInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [processingStep, setProcessingStep] = useState<string>('listening');
+  const [stepMessage, setStepMessage] = useState<string>('A ouvir os primeiros 3 minutos do áudio...');
+  const [stepDetail, setStepDetail] = useState<string>('A analisar tom, BPM, ritmo e presença vocal com modelo Gemini Flash...');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [result, setResult] = useState<SongAlternativeResult | null>(null);
+
+  // States for secondary fast actions (no audio re-upload)
+  const [isRegeneratingLyrics, setIsRegeneratingLyrics] = useState(false);
+  const [isGeneratingSeo, setIsGeneratingSeo] = useState(false);
+  const [isGeneratingLyricsForBeat, setIsGeneratingLyricsForBeat] = useState(false);
 
   // Clean up object URLs when audio changes
   useEffect(() => {
@@ -64,7 +74,6 @@ export default function App() {
       reader.readAsDataURL(file);
       reader.onload = () => {
         const res = reader.result as string;
-        // Extract raw base64 after comma
         const base64 = res.includes(',') ? res.split(',')[1] : res;
         resolve(base64);
       };
@@ -72,6 +81,10 @@ export default function App() {
     });
   };
 
+  /**
+   * Chamada 1: Análise do áudio (máx. 3 minutos) + Letra alternativa + Estilo musical
+   * Streaming em tempo real por etapas e exibição imediata do resultado
+   */
   const handleCreateAlternative = async () => {
     if (!audioInfo) {
       setErrorMessage('Por favor seleciona um ficheiro de áudio primeiro.');
@@ -80,18 +93,23 @@ export default function App() {
 
     setIsLoading(true);
     setErrorMessage(null);
+    setProcessingStep('listening');
+    setStepMessage('A ouvir os primeiros 3 minutos do áudio...');
+    setStepDetail('A analisar tom, BPM, ritmo e presença vocal com modelo Gemini Flash...');
 
     try {
-      // Convert file to base64
-      const base64Data = await fileToBase64(audioInfo.file);
+      // Otimiza e corta áudio no browser para 16kHz mono (máx. 3 minutos), reduzindo o payload em mais de 80%
+      const { file: processedFile } = await trimAudioToMax3Minutes(audioInfo.file, (detail) => {
+        setStepDetail(detail);
+      });
+      const base64Data = await fileToBase64(processedFile);
 
-      // Determine clean mimeType
-      let mimeType = audioInfo.file.type;
+      let mimeType = processedFile.type;
       if (!mimeType || mimeType === 'application/octet-stream') {
-        mimeType = audioInfo.name.toLowerCase().endsWith('.wav') ? 'audio/wav' : 'audio/mp3';
+        mimeType = processedFile.name.toLowerCase().endsWith('.wav') ? 'audio/wav' : 'audio/mp3';
       }
 
-      const res = await fetch('/api/create-alternative', {
+      const response = await fetch('/api/create-alternative', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -103,24 +121,77 @@ export default function App() {
         }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Ocorreu um erro ao processar a música.');
+      if (!response.ok && !response.body) {
+        throw new Error('Falha ao comunicar com o servidor.');
       }
 
-      if (!data.letra || !data.estilo) {
-        throw new Error('A resposta do modelo não contém a letra ou o estilo esperados.');
+      // Read SSE stream
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let streamBuffer = '';
+      let receivedFinalResult = false;
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          streamBuffer += decoder.decode(value, { stream: true });
+          const lines = streamBuffer.split('\n\n');
+          streamBuffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data: ')) {
+              try {
+                const event = JSON.parse(trimmed.slice(6));
+                if (event.step === 'error') {
+                  throw new Error(event.error || event.message || 'Erro no processamento');
+                }
+
+                if (event.step && event.step !== 'done') {
+                  setProcessingStep(event.step);
+                  if (event.message) setStepMessage(event.message);
+                  if (event.detail) setStepDetail(event.detail);
+                }
+
+                if (event.step === 'done' && event.result) {
+                  receivedFinalResult = true;
+                  setResult({
+                    analysisId: event.result.analysisId,
+                    letra: event.result.letra,
+                    estilo: event.result.estilo,
+                    idiomaLetra: event.result.idiomaLetra,
+                    isInstrumental: Boolean(event.result.isInstrumental),
+                    letraCriada: false,
+                    youtubeSeo: undefined, // O Pacote YouTube é gerado apenas sob pedido
+                  });
+                }
+              } catch (parseErr) {
+                console.warn('Erro ao processar linha do stream:', parseErr);
+              }
+            }
+          }
+        }
       }
 
-      setResult({
-        letra: data.letra,
-        estilo: data.estilo,
-        idiomaLetra: data.idiomaLetra,
-        isInstrumental: Boolean(data.isInstrumental),
-        letraCriada: false,
-        youtubeSeo: data.youtubeSeo,
-      });
+      if (!receivedFinalResult) {
+        // Fallback: check if buffer has final data
+        if (streamBuffer.includes('data: ')) {
+          const jsonStr = streamBuffer.replace(/^data:\s*/, '').trim();
+          const event = JSON.parse(jsonStr);
+          if (event.result) {
+            setResult({
+              analysisId: event.result.analysisId,
+              letra: event.result.letra,
+              estilo: event.result.estilo,
+              idiomaLetra: event.result.idiomaLetra,
+              isInstrumental: Boolean(event.result.isInstrumental),
+              letraCriada: false,
+            });
+          }
+        }
+      }
 
       // Scroll smoothly to results
       setTimeout(() => {
@@ -139,28 +210,115 @@ export default function App() {
     }
   };
 
-  const [isGeneratingLyricsForBeat, setIsGeneratingLyricsForBeat] = useState(false);
+  /**
+   * "Gerar outra versão":
+   * Reutiliza a análise do áudio em memória (analysisId), SEM re-processar o áudio.
+   */
+  const handleRegenerateLyrics = async () => {
+    if (!result) return;
+    setIsRegeneratingLyrics(true);
+    setErrorMessage(null);
 
+    try {
+      const res = await fetch('/api/regenerate-lyrics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          analysisId: result.analysisId,
+          estilo: result.estilo,
+          isInstrumental: result.isInstrumental,
+          idiomaLetra: result.idiomaLetra,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao gerar outra versão.');
+      }
+
+      setResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              letra: data.letra,
+              idiomaLetra: data.idiomaLetra || prev.idiomaLetra,
+            }
+          : null
+      );
+    } catch (err: any) {
+      console.error('Erro ao gerar outra versão:', err);
+      setErrorMessage(err.message || 'Falha ao gerar outra versão de letra.');
+    } finally {
+      setIsRegeneratingLyrics(false);
+    }
+  };
+
+  /**
+   * Chamada 2: "Gerar pacote YouTube"
+   * Chamado APENAS quando o utilizador clica explicitamente no botão.
+   * Não reprocessa áudio, usa a análise e a letra existentes.
+   */
+  const handleGenerateYouTubeSeo = async () => {
+    if (!result) return;
+    setIsGeneratingSeo(true);
+    setErrorMessage(null);
+
+    try {
+      const res = await fetch('/api/generate-youtube-seo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          analysisId: result.analysisId,
+          letra: result.letra,
+          estilo: result.estilo,
+          idiomaLetra: result.idiomaLetra,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao gerar pacote YouTube SEO.');
+      }
+
+      setResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              youtubeSeo: data.youtubeSeo,
+            }
+          : null
+      );
+
+      // Smooth scroll to YouTube card
+      setTimeout(() => {
+        const seoCardEl = document.getElementById('youtube-seo-card');
+        if (seoCardEl) {
+          seoCardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }, 100);
+    } catch (err: any) {
+      console.error('Erro ao gerar pacote YouTube:', err);
+      setErrorMessage(err.message || 'Falha ao gerar o pacote YouTube.');
+    } finally {
+      setIsGeneratingSeo(false);
+    }
+  };
+
+  /**
+   * "Criar letra para esta batida":
+   * Para faixas instrumentais, cria letra rápida sem reprocessar áudio.
+   */
   const handleCreateLyricsForBeat = async (idioma: 'pt' | 'en') => {
-    if (!audioInfo || !result) return;
+    if (!result) return;
     setIsGeneratingLyricsForBeat(true);
     setErrorMessage(null);
 
     try {
-      const base64Data = await fileToBase64(audioInfo.file);
-      let mimeType = audioInfo.file.type;
-      if (!mimeType || mimeType === 'application/octet-stream') {
-        mimeType = audioInfo.name.toLowerCase().endsWith('.wav') ? 'audio/wav' : 'audio/mp3';
-      }
-
       const res = await fetch('/api/create-lyrics-for-beat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          audioBase64: base64Data,
-          mimeType,
+          analysisId: result.analysisId,
           beatStyle: result.estilo,
           idioma,
         }),
@@ -178,12 +336,6 @@ export default function App() {
               letra: data.letra,
               idiomaLetra: data.idiomaLetra,
               letraCriada: true,
-              youtubeSeo: data.youtubeSeo || (prev.youtubeSeo ? {
-                ...prev.youtubeSeo,
-                descricao: prev.youtubeSeo.descricao.includes('Instrumental: sem letra')
-                  ? prev.youtubeSeo.descricao.replace('Instrumental: sem letra', `\n--- LETRA ---\n${data.letra}`)
-                  : `${prev.youtubeSeo.descricao}\n\n--- LETRA ---\n${data.letra}`.slice(0, 5000),
-              } : undefined),
             }
           : null
       );
@@ -221,8 +373,8 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 text-xs text-zinc-400 bg-zinc-900/80 border border-zinc-800 px-3 py-1.5 rounded-full">
-            <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-            <span className="font-medium text-zinc-300">Gemini Audio AI</span>
+            <Zap className="w-3.5 h-3.5 text-purple-400" />
+            <span className="font-medium text-zinc-300">Gemini Flash · Streaming</span>
           </div>
         </div>
       </header>
@@ -233,7 +385,7 @@ export default function App() {
         <div className="text-center max-w-2xl mx-auto space-y-3">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-950/50 border border-purple-500/30 text-purple-300 text-xs font-medium">
             <Wand2 className="w-3.5 h-3.5" />
-            <span>Da tua música para uma obra totalmente nova</span>
+            <span>Processamento rápido em streaming por etapas</span>
           </div>
           <h2 className="font-display text-2xl sm:text-4xl font-bold tracking-tight text-zinc-100">
             Cria uma versão alternativa <br className="hidden sm:inline" />
@@ -242,8 +394,8 @@ export default function App() {
             </span>
           </h2>
           <p className="text-sm sm:text-base text-zinc-400 leading-relaxed">
-            Envia uma faixa em MP3 ou WAV. A inteligência artificial descreve o estilo com máxima fidelidade
-            acústica para recriação exata e compõe uma letra nova que encaixa na mesma melodia, métrica e esquema de rimas.
+            Carrega uma faixa em MP3 ou WAV. O modelo analisa os primeiros 3 minutos com raciocínio otimizado,
+            descreve o estilo original e compõe uma letra nova que encaixa na melodia.
           </p>
         </div>
 
@@ -257,7 +409,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setErrorMessage(null)}
-              className="text-red-400 hover:text-red-200 text-xs font-semibold px-2 py-1 rounded hover:bg-red-900/40 transition-colors"
+              className="text-red-400 hover:text-red-200 text-xs font-semibold px-2 py-1 rounded hover:bg-red-900/40 transition-colors cursor-pointer"
             >
               Fechar
             </button>
@@ -274,7 +426,7 @@ export default function App() {
               Ficheiro de áudio da música
             </h3>
             <p className="text-xs sm:text-sm text-zinc-400 pl-8">
-              Carrega o ficheiro da canção que servirá de inspiração para a nova versão.
+              Carrega o ficheiro da canção (analisados os primeiros 3 minutos).
             </p>
           </div>
 
@@ -335,10 +487,14 @@ export default function App() {
           </div>
         </section>
 
-        {/* Processing Indicator */}
+        {/* Processing Indicator com Streaming de Etapas */}
         {isLoading && (
           <section className="animate-fade-in">
-            <ProcessingState />
+            <ProcessingState
+              currentStep={processingStep}
+              stepMessage={stepMessage}
+              stepDetail={stepDetail}
+            />
           </section>
         )}
 
@@ -356,16 +512,19 @@ export default function App() {
                 </h3>
               </div>
 
+              {/* Botão "Gerar outra versão" que reutiliza a análise em memória sem re-enviar o áudio */}
               <button
-                onClick={handleCreateAlternative}
-                className="self-start sm:self-auto flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-zinc-900 hover:bg-zinc-800 text-purple-300 border border-purple-500/30 hover:border-purple-400/50 transition-all cursor-pointer"
+                onClick={handleRegenerateLyrics}
+                disabled={isRegeneratingLyrics}
+                className="self-start sm:self-auto flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-zinc-900 hover:bg-zinc-800 text-purple-300 border border-purple-500/30 hover:border-purple-400/50 transition-all cursor-pointer disabled:opacity-50"
+                title="Gera uma nova letra com base na análise musical em memória (instantâneo)"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Gerar outra variação</span>
+                <RefreshCw className={`w-3.5 h-3.5 ${isRegeneratingLyrics ? 'animate-spin' : ''}`} />
+                <span>{isRegeneratingLyrics ? 'A gerar nova versão...' : 'Gerar outra versão'}</span>
               </button>
             </div>
 
-            {/* Two Cards Grid */}
+            {/* Two Cards Grid: Letra alternativa & Estilo musical */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
               {/* Card 1: Letra alternativa */}
               <div className="h-full">
@@ -385,15 +544,56 @@ export default function App() {
               </div>
             </div>
 
-            {/* Card 3: Pacote YouTube SEO */}
-            {result.youtubeSeo && (
-              <div className="pt-2">
+            {/* Card 3: Pacote YouTube SEO (Chamada 2 sob pedido explícito) */}
+            <div id="youtube-seo-card" className="pt-2">
+              {result.youtubeSeo ? (
                 <YouTubeSeoCard
                   seo={result.youtubeSeo}
                   idiomaLetra={result.idiomaLetra}
+                  onRegenerate={handleGenerateYouTubeSeo}
+                  isRegenerating={isGeneratingSeo}
                 />
-              </div>
-            )}
+              ) : (
+                <div className="bg-zinc-900/90 border border-zinc-800 hover:border-purple-500/30 rounded-2xl p-6 sm:p-7 shadow-xl shadow-purple-950/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 transition-all">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-xl bg-red-600/15 border border-red-500/30 flex items-center justify-center text-red-500 shrink-0 shadow-md shadow-red-950/20">
+                      <Youtube className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-display font-semibold text-zinc-100 text-lg">
+                          Pacote YouTube (SEO)
+                        </h4>
+                        <span className="text-[10px] font-semibold text-purple-300 bg-purple-950/80 border border-purple-500/30 px-2 py-0.5 rounded">
+                          Sob pedido
+                        </span>
+                      </div>
+                      <p className="text-xs text-zinc-400 mt-1 max-w-xl leading-relaxed">
+                        Cria 5 títulos com gancho emocional, descrição otimizada com a letra completa, tags, hashtags, textos de miniatura e comentário fixado. Reutiliza a análise em memória instantaneamente.
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleGenerateYouTubeSeo}
+                    disabled={isGeneratingSeo}
+                    className="w-full sm:w-auto px-5 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 active:scale-[0.99] text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30 hover:shadow-purple-500/40 border border-purple-400/30 transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    {isGeneratingSeo ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>A criar pacote YouTube...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 text-purple-200" />
+                        <span>Gerar pacote YouTube</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
           </section>
         )}
       </main>
@@ -408,7 +608,7 @@ export default function App() {
             <span>Composição alternativa inteligente</span>
           </div>
           <p className="text-zinc-400">
-            Processamento de áudio direto com o modelo multimodal Gemini.
+            Processamento de áudio direto com o modelo multimodal Gemini Flash.
           </p>
         </div>
       </footer>

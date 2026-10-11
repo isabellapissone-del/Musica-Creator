@@ -36,7 +36,10 @@ export interface YouTubeSeoPackage {
   };
 }
 
+export type ProcessingStep = 'listening' | 'lyrics' | 'style' | 'condensing' | 'done';
+
 export interface SongAlternativeResult {
+  analysisId?: string;
   letra: string;
   estilo: MusicalStyle | string;
   idiomaLetra?: string;

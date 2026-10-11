@@ -20,9 +20,16 @@ import { YouTubeSeoPackage } from '../types';
 interface YouTubeSeoCardProps {
   seo: YouTubeSeoPackage;
   idiomaLetra?: string;
+  onRegenerate?: () => void;
+  isRegenerating?: boolean;
 }
 
-export const YouTubeSeoCard: React.FC<YouTubeSeoCardProps> = ({ seo, idiomaLetra }) => {
+export const YouTubeSeoCard: React.FC<YouTubeSeoCardProps> = ({
+  seo,
+  idiomaLetra,
+  onRegenerate,
+  isRegenerating = false,
+}) => {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
   const [isExpandedDesc, setIsExpandedDesc] = useState(false);
@@ -42,27 +49,27 @@ export const YouTubeSeoCard: React.FC<YouTubeSeoCardProps> = ({ seo, idiomaLetra
       const fullText = `=== PACOTE YOUTUBE SEO ===
 
 --- TÍTULOS SUGERIDOS ---
-${seo.titulos.map((t, i) => `${i + 1}. ${t}`).join('\n')}
+${(seo.titulos || []).map((t, i) => `${i + 1}. ${t}`).join('\n')}
 
 --- DESCRIÇÃO ---
-${seo.descricao}
+${seo.descricao || ''}
 
 --- TAGS ---
-${seo.tags}
+${seo.tags || ''}
 
 --- HASHTAGS ---
-${seo.hashtags.join(' ')}
+${(seo.hashtags || []).join(' ')}
 
 --- TEXTO PARA MINIATURA (THUMBNAIL) ---
-${seo.textoMiniatura.map((m, i) => `Opção ${i + 1}: ${m}`).join('\n')}
+${(seo.textoMiniatura || []).map((m, i) => `Opção ${i + 1}: ${m}`).join('\n')}
 
 ${seo.capitulos && seo.capitulos.length > 0 ? `--- CAPÍTULOS ---\n${seo.capitulos.join('\n')}\n\n` : ''}--- COMENTÁRIO FIXADO ---
-${seo.comentarioFixado}
+${seo.comentarioFixado || ''}
 
 --- PALAVRAS-CHAVE ---
-Principal: ${seo.palavrasChave.principal}
-Secundárias: ${seo.palavrasChave.secundarias.join(', ')}
-Cauda Longa: ${seo.palavrasChave.caudaLonga.join(', ')}
+Principal: ${seo.palavrasChave?.principal || ''}
+Secundárias: ${(seo.palavrasChave?.secundarias || []).join(', ')}
+Cauda Longa: ${(seo.palavrasChave?.caudaLonga || []).join(', ')}
 `;
       await navigator.clipboard.writeText(fullText.trim());
       setCopiedAll(true);
@@ -100,27 +107,41 @@ Cauda Longa: ${seo.palavrasChave.caudaLonga.join(', ')}
           </div>
         </div>
 
-        <button
-          onClick={handleCopyAll}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-            copiedAll
-              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-              : 'bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30'
-          }`}
-          aria-label="Copiar pacote YouTube completo"
-        >
-          {copiedAll ? (
-            <>
-              <Check className="w-4 h-4 text-emerald-400" />
-              <span>Pacote copiado!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-4 h-4" />
-              <span>Copiar pacote completo</span>
-            </>
+        <div className="flex items-center gap-2">
+          {onRegenerate && (
+            <button
+              onClick={onRegenerate}
+              disabled={isRegenerating}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700/60 transition-all cursor-pointer disabled:opacity-50"
+              title="Gerar outra versão de SEO"
+            >
+              <Sparkles className={`w-3.5 h-3.5 text-purple-400 ${isRegenerating ? 'animate-spin' : ''}`} />
+              <span>{isRegenerating ? 'A gerar...' : 'Outra variação'}</span>
+            </button>
           )}
-        </button>
+
+          <button
+            onClick={handleCopyAll}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+              copiedAll
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : 'bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30'
+            }`}
+            aria-label="Copiar pacote YouTube completo"
+          >
+            {copiedAll ? (
+              <>
+                <Check className="w-4 h-4 text-emerald-400" />
+                <span>Pacote copiado!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-4 h-4" />
+                <span>Copiar pacote completo</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Grid: Títulos & Descrição */}

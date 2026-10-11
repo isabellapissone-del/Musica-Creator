@@ -3,7 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 
 dotenv.config();
 
@@ -13,69 +13,127 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Set payload limit to 50MB to comfortably support MP3 and WAV files
+// Set payload limit to 50MB to support MP3 and WAV files
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// In-memory cache for audio analysis to avoid re-processing audio files
+interface CachedAnalysis {
+  analysisId: string;
+  isInstrumental: boolean;
+  idiomaLetra: string;
+  estilo: any;
+  letra: string;
+  fileName?: string;
+  timestamp: number;
+}
+const audioAnalysisCache = new Map<string, CachedAnalysis>();
+
+// Cleanup stale cache entries older than 2 hours
+setInterval(() => {
+  const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, item] of audioAnalysisCache.entries()) {
+    if (item.timestamp < twoHoursAgo) {
+      audioAnalysisCache.delete(id);
+    }
+  }
+}, 30 * 60 * 1000);
+
+// Helper to calculate style text length for limit verification
+function formatStyleForCount(style: any): string {
+  if (!style) return '';
+  if (typeof style === 'string') return style.trim();
+  const parts: string[] = [];
+  if (style.descricao) parts.push(style.descricao.trim());
+  if (style.tags && Array.isArray(style.tags) && style.tags.length > 0) {
+    parts.push(`Etiquetas: ${style.tags.join(', ')}`);
+  }
+  const details: string[] = [];
+  if (style.bpm) details.push(`BPM: ${style.bpm}`);
+  if (style.compasso) details.push(`Compasso: ${style.compasso}`);
+  if (style.tom) details.push(`Tom: ${style.tom}`);
+  if (style.genero) details.push(`Género: ${style.genero}`);
+  if (style.swingGroove) details.push(`Groove: ${style.swingGroove}`);
+  if (style.padraoBateria) details.push(`Bateria: ${style.padraoBateria}`);
+  if (style.linhaBaixo) details.push(`Baixo: ${style.linhaBaixo}`);
+  if (style.emocao) details.push(`Emoção: ${style.emocao}`);
+  if (style.tipoVoz) details.push(`Voz: ${style.tipoVoz}`);
+  if (style.atmosfera) details.push(`Atmosfera: ${style.atmosfera}`);
+  if (style.producao) details.push(`Produção: ${style.producao}`);
+  if (style.estruturaBatida) details.push(`Estrutura: ${style.estruturaBatida}`);
+  if (style.instrumentos && Array.isArray(style.instrumentos) && style.instrumentos.length > 0) {
+    details.push(`Instrumentos: ${style.instrumentos.join(', ')}`);
+  }
+  if (details.length > 0) {
+    parts.push(`Parâmetros: ${details.join(' · ')}`);
+  }
+  return parts.join('\n\n').trim();
+}
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     hasKey: Boolean(process.env.GEMINI_API_KEY),
+    cachedAnalyses: audioAnalysisCache.size,
   });
 });
 
-// Endpoint to process audio and create alternative song version
+/**
+ * 1. CHAMADA 1 (Streaming SSE):
+ * Análise dos primeiros 3 minutos do áudio + Letra alternativa + Estilo musical.
+ * Otimizado com Gemini Flash mais recente, raciocínio reduzido (ThinkingLevel.LOW),
+ * e contagem de caracteres estritamente no código com re-chamada rápida se necessário.
+ */
 app.post('/api/create-alternative', async (req, res) => {
+  // Set up Server-Sent Events headers for progressive streaming feedback
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const sendEvent = (event: { step: string; message: string; detail?: string; result?: any; error?: string }) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
   try {
     const { audioBase64, mimeType, fileName } = req.body;
 
     if (!audioBase64) {
-      return res.status(400).json({
+      sendEvent({
+        step: 'error',
+        message: 'Nenhum ficheiro de áudio foi enviado.',
         error: 'Nenhum ficheiro de áudio foi enviado. Por favor seleciona um ficheiro MP3 ou WAV.',
       });
+      return res.end();
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({
-        error: 'Chave da API Gemini não configurada no servidor. Por favor verifica as variáveis de ambiente.',
+      sendEvent({
+        step: 'error',
+        message: 'Chave da API Gemini não configurada.',
+        error: 'Chave da API Gemini não configurada no servidor.',
       });
+      return res.end();
     }
 
-    // Validate MIME type
-    const validMimes = [
-      'audio/mp3',
-      'audio/mpeg',
-      'audio/wav',
-      'audio/wave',
-      'audio/x-wav',
-      'audio/ogg',
-      'audio/m4a',
-      'audio/aac',
-      'audio/x-m4a',
-      'audio/webm',
-    ];
+    // Step 1: Listening
+    sendEvent({
+      step: 'listening',
+      message: 'A ouvir os primeiros 3 minutos do áudio...',
+      detail: 'A analisar tom, BPM, ritmo, instrumentação e presença vocal.',
+    });
 
-    const normalizedMime = (mimeType || 'audio/mp3').toLowerCase();
-    const isMimeValid = validMimes.includes(normalizedMime) || normalizedMime.startsWith('audio/');
-    if (!isMimeValid) {
-      return res.status(400).json({
-        error: 'Formato de áudio não suportado. Por favor envia um ficheiro MP3 ou WAV válido.',
-      });
-    }
-
-    // Clean base64 string if it contains data URI prefix
     const cleanBase64 = audioBase64.replace(/^data:audio\/[a-zA-Z0-9.+_-]+;base64,/, '');
 
-    // Size sanity check (max ~25MB of binary data, which is ~35MB in base64)
-    if (cleanBase64.length > 36 * 1024 * 1024) {
-      return res.status(413).json({
-        error: 'O ficheiro de áudio é demasiado grande. O tamanho máximo permitido é de 25 MB.',
-      });
+    let geminiMime = (mimeType || 'audio/mp3').toLowerCase();
+    if (geminiMime === 'audio/wave' || geminiMime === 'audio/x-wav') {
+      geminiMime = 'audio/wav';
+    } else if (geminiMime === 'audio/mpeg') {
+      geminiMime = 'audio/mp3';
     }
 
-    // Initialize Gemini client with telemetry header
     const ai = new GoogleGenAI({
       apiKey,
       httpOptions: {
@@ -86,80 +144,34 @@ app.post('/api/create-alternative', async (req, res) => {
     });
 
     const systemInstruction = `És um produtor musical consagrado, engenheiro de som e letrista profissional de altíssima precisão métrica.
-A tua missão é ouvir com a máxima atenção o ficheiro de áudio da música original fornecida e gerar uma versão alternativa em texto com fidelidade milimétrica às características musicais e métricas da obra.
+A tua missão é ouvir com a máxima atenção os primeiros 3 minutos (0:00 a 3:00) do ficheiro de áudio fornecido e gerar uma versão alternativa em texto, de forma direta e rápida.
 
-1. IDIOMA E REGRA LINGUÍSTICA INEGOCIÁVEL:
-   - A DESCRIÇÃO DO ESTILO MUSICAL ("estilo"), todos os seus detalhes e campos explicativos DEVEM FICAR SEMPRE EM PORTUGUÊS DE PORTUGAL (vocabulário europeu como "ficheiro", "ecrã", "bateria", "eco", "mistura", sintaxe e ortografia de Portugal, nunca brasileira), independentemente do idioma da música original.
-   - IDIOMA DA LETRA ALTERNATIVA (quando houver letra):
-     * Se a música original for em Português: escreve a letra obrigatoriamente em Português de Portugal (vocabulário, ortografia e expressões europeias, nunca brasileiras).
-     * Se for em Inglês: escreve a letra em Inglês internacional neutro, fluído e poético, sem gíria regional.
-     * Se for noutro idioma (ex: Francês, Espanhol, Italiano, Alemão, etc.): mantém exatamente esse idioma original da canção.
-   - Devolve no campo "idiomaLetra" o nome do idioma detetado (ex: "Português (Portugal)", "Inglês (Internacional)", etc.).
-
-2. DETEÇÃO OBRIGATÓRIA DE MODO INSTRUMENTAL (BATIDA / BEAT):
-   - Ouve atentamente se a faixa possui canto lírico com letra contínua.
-   - SE A MÚSICA NÃO TIVER VOZ NEM LETRA, OU TIVER APENAS VOZES PONTUAIS (como samples vocais cortados, ad-libs, repetições de palavras soltas ou efeitos de DJ):
-     * Define OBRIGATORIAMENTE 'isInstrumental': true.
-     * No campo 'letra': coloca EXATAMENTE o texto "Instrumental: sem letra".
-     * No campo 'estilo': descreve a batida com o MÁXIMO DE FIDELIDADE POSSÍVEL:
-       - BPM (ex: "130 BPM")
-       - Compasso (ex: "4/4")
-       - Tom e escala (ex: "Dó menor / Cm")
-       - Swing / Groove (ex: "shuffle swingado com síncope", "reto e preciso", "trap bounce com hi-hats em tercinas")
-       - Padrão de bateria (kick firme, snare/clap na 2ª e 4ª batidas, hi-hats com rolls, percussão com shakers)
-       - Linha de baixo (ex: sub-grave 808 deslizante, baixo synth analógico Moog, slap bass funk)
-       - Samples e sintetizadores (pads atmosféricos, chaves rhodes, leads com filtro)
-       - Efeitos sonoros (sidechain acentuado, reverb de mola, delays estéreo, saturação de fita)
-       - Atmosfera (ex: "noturna, enérgica, densa, urbana")
-       - Estrutura da batida (intro de 8 compassos, drop/batida principal, break com filtro low-pass, build-up e outro)
-     * Mantém frases compactas e etiquetas precisas, com o SOMATÓRIO TOTAL DO ESTILO A NÃO ULTRAPASSAR 950 CARACTERES.
-
+REGRAS OBRIGATÓRIAS:
+1. IDIOMA:
+   - A descrição do estilo musical e todos os seus campos DEVEM FICAR SEMPRE EM PORTUGUÊS DE PORTUGAL (vocabulário e sintaxe de Portugal: "ficheiro", "bateria", "mistura").
+   - Letra alternativa (quando houver voz cantada):
+     * Se for Português: Português de Portugal europeu.
+     * Se for Inglês: Inglês internacional neutro.
+     * Outro idioma: mantém o idioma original da canção.
+2. DETEÇÃO DE MODO INSTRUMENTAL (BATIDA / BEAT):
+   - Se a faixa NÃO tiver voz cantada contínua, ou tiver APENAS samples vocais curtos / ad-libs / efeitos DJ:
+     * 'isInstrumental': true.
+     * 'letra': EXATAMENTE "Instrumental: sem letra".
+     * 'estilo': descreve a batida com máxima fidelidade (BPM, compasso, tom, swing/groove, bateria, baixo, sintetizadores, atmosfera e estrutura).
 3. QUANDO A MÚSICA TIVER LETRA CANTADA REAL ('isInstrumental': false):
-   - Escreve uma letra nova que siga DE MUITO PERTO a original em:
-     * Idioma: segundo a regra linguística acima.
-     * Tema central e tom lírico da música.
-     * Emoção e intensidade dramática a cada momento.
-     * Narrativa e progressão da história ao longo das estrofes.
-     * Número exato de versos por secção ([Verso], [Refrão], [Verso 2], [Refrão], [Ponte]).
-     * Métrica aproximada de sílabas por verso para encaixar com precisão na melodia cantada original.
-     * Esquema de rimas fiel ao da canção original.
-     * REGRAS FUNDAMENTAIS: Palavras e imagens novas, NUNCA copiar frases da letra original.
+   - Escreve uma letra nova que siga de muito perto a original em tema, emoção, narrativa, número de versos por secção ([Verso], [Refrão], [Verso 2], [Refrão], [Ponte]), métrica e esquema de rimas.
+   - NUNCA copies frases da letra original. Palavras e imagens 100% novas.
+   - LIMITE OBRIGATÓRIO: A letra DEVE ter menos de 4000 caracteres no total.
+4. ESTILO MUSICAL (LIMITE ESTRITO):
+   - O estilo sonoro com todos os campos sumariados DEVE ter menos de 900 caracteres no total. Sê conciso, direto e cirúrgico em cada parâmetro.`;
 
-4. LIMITES OBRIGATÓRIOS DE CARACTERES (RIGOROSAMENTE EXIGIDOS):
-   - "letra": DEVE TER NO MÁXIMO 4500 CARACTERES.
-   - "estilo": O estilo musical (descrição, etiquetas e parâmetros somados) DEVE TER NO MÁXIMO 950 CARACTERES.
-   - ANTES DE DEVOLVER: Conta os caracteres de cada campo e confirma que cumprem rigorosamente estes limites.
+    const userPrompt = `Analisa os primeiros 3 minutos do áudio (${fileName || 'faixa'}).
+1. Identifica se é instrumental/batida ou se tem voz cantada.
+2. Gera a letra alternativa ([Verso], [Refrão], [Ponte]) ou "Instrumental: sem letra" (< 4000 caracteres).
+3. Descreve o estilo sonoro original com etiquetas em Português de Portugal (< 900 caracteres).`;
 
-5. MÓDULO SEO PARA YOUTUBE ("youtubeSeo"):
-   - Gera um pacote completo e estratégico de SEO para publicação no YouTube, no idioma da música/letra (Português de Portugal ou Inglês Internacional conforme detetado):
-     * "titulos": exatamente 5 opções de títulos com NO MÁXIMO 70 caracteres cada, com a palavra-chave principal no início, gancho emocional e sem clickbait enganoso.
-     * "descricao": descrição completa com NO MÁXIMO 5000 caracteres. As duas primeiras linhas DEVEM conter a palavra-chave principal e o gancho emocional (aparecem antes de "mostrar mais"). Depois inclui: resumo, a letra completa (ou descrição da batida se instrumental), informações essenciais de estilo e apelo à ação (subscrever, comentar).
-     * "tags": lista de tags separada por vírgulas com NO MÁXIMO 500 caracteres no total, da mais específica à mais geral, incluindo variações e erros comuns de escrita.
-     * "hashtags": 3 a 5 hashtags (nunca mais de 15), começando com #.
-     * "textoMiniatura": exatamente 3 opções curtas para miniatura (thumbnail), com NO MÁXIMO 4 palavras cada.
-     * "capitulos": marcas de tempo sequenciais se a música tiver estrutura (ex: ["0:00 Intro", "0:20 Verso 1", "0:50 Refrão", "1:22 Verso 2", "1:54 Refrão", "2:26 Ponte", "2:52 Outro"]).
-     * "comentarioFixado": uma pergunta envolvente para incentivar comentários.
-     * "palavrasChave": objeto com "principal" (string), "secundarias" (array de strings) e "caudaLonga" (array de strings).
-   - REGRA MANDATÓRIA: NUNCA uses o nome do artista original nem o título da música original nos títulos, tags ou descrição de forma enganosa para parecer a música dele.
-
-Devolve estritamente o JSON com os campos "isInstrumental", "letra", "estilo", "idiomaLetra" e "youtubeSeo".`;
-
-    const userPrompt = `Ouve atentamente o áudio (${fileName || 'faixa de áudio'}). 
-1. Se a música não tiver voz nem letra, ou tiver apenas vozes pontuais (samples ou ad-libs), define 'isInstrumental': true, define a letra como "Instrumental: sem letra" e descreve a batida com o máximo de fidelidade (BPM, compasso, tom, swing/groove, padrão de bateria com kick/snare/hi-hats, linha de baixo, samples, sintetizadores, efeitos, atmosfera e estrutura).
-2. Se a música tiver letra cantada real, define 'isInstrumental': false e compõe uma letra nova que siga de muito perto a original na mesma melodia, no idioma detetado (Português de Portugal se for português, Inglês internacional se for inglês, ou idioma original se for outro).
-3. A descrição e parâmetros do estilo ficam SEMPRE em Português de Portugal.
-4. Gera o Pacote SEO para YouTube completo (5 títulos <= 70 chars, descrição <= 5000 chars, tags <= 500 chars, 3-5 hashtags, 3 textos de miniatura <= 4 palavras, capítulos, comentário fixado, palavras-chave) no idioma da música e sem usar nomes ou títulos originais de forma enganosa.
-5. CUMPRE RIGOROSAMENTE OS LIMITES DE CARACTERES: estilo no máximo 950 caracteres, letra no máximo 4500 caracteres, descrição YouTube no máximo 5000 caracteres, tags YouTube no máximo 500 caracteres.`;
-
-    // Audio MIME type mapping for Gemini
-    let geminiMime = normalizedMime;
-    if (geminiMime === 'audio/wave' || geminiMime === 'audio/x-wav') {
-      geminiMime = 'audio/wav';
-    } else if (geminiMime === 'audio/mpeg') {
-      geminiMime = 'audio/mp3';
-    }
-
-    const response = await ai.models.generateContent({
+    // Stream generation with reduced thinking (ThinkingLevel.LOW) for lowest latency
+    const stream = await ai.models.generateContentStream({
       model: 'gemini-3.8-flash',
       contents: [
         {
@@ -174,340 +186,553 @@ Devolve estritamente o JSON com os campos "isInstrumental", "letra", "estilo", "
       ],
       config: {
         systemInstruction,
+        thinkingConfig: {
+          thinkingLevel: ThinkingLevel.LOW,
+        },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            isInstrumental: {
-              type: Type.BOOLEAN,
-              description: 'Verdadeiro se a música for instrumental, batida/beat, ou tiver apenas samples/ad-libs pontuais.',
-            },
-            idiomaLetra: {
-              type: Type.STRING,
-              description: 'Idioma detetado na música ou aplicado à letra.',
-            },
-            letra: {
-              type: Type.STRING,
-              description: 'Letra alternativa ou "Instrumental: sem letra".',
-            },
+            isInstrumental: { type: Type.BOOLEAN },
+            idiomaLetra: { type: Type.STRING },
+            letra: { type: Type.STRING, description: 'Letra alternativa estruturada com [Verso] e [Refrão], ou Instrumental: sem letra. Máximo 4000 caracteres.' },
             estilo: {
               type: Type.OBJECT,
               properties: {
-                descricao: {
-                  type: Type.STRING,
-                  description: 'Parágrafo detalhado sempre em Português de Portugal descrevendo a faixa ou batida.',
-                },
-                tags: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: 'Etiquetas de estilo precisas e minuciosas sempre em Português de Portugal.',
-                },
-                tema: { type: Type.STRING, description: 'Tema lírico/conceptual ou tema da batida' },
-                emocao: { type: Type.STRING, description: 'Emoção e vibração predominante' },
-                genero: { type: Type.STRING, description: 'Género musical e subgéneros' },
-                bpm: { type: Type.STRING, description: 'Tempo / BPM preciso' },
-                compasso: { type: Type.STRING, description: 'Compasso da batida (ex: 4/4)' },
-                tom: { type: Type.STRING, description: 'Tom ou tonalidade musical' },
-                swingGroove: { type: Type.STRING, description: 'Swing e groove da batida' },
-                padraoBateria: { type: Type.STRING, description: 'Padrão rítmico de bateria (kick, snare, hi-hats, percussão)' },
-                linhaBaixo: { type: Type.STRING, description: 'Linha de baixo / sub-bass' },
-                samplesSintetizadores: { type: Type.STRING, description: 'Samples e sintetizadores' },
-                estruturaBatida: { type: Type.STRING, description: 'Estrutura da batida (intro, drop, break, outro)' },
-                instrumentos: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: 'Instrumentos, texturas e timbres identificados',
-                },
-                tipoVoz: { type: Type.STRING, description: 'Tipo de voz ou indicação de instrumental' },
-                atmosfera: { type: Type.STRING, description: 'Atmosfera e ambiência sonora' },
-                producao: { type: Type.STRING, description: 'Técnicas de produção, mistura e efeitos de som' },
-                esquemaRimas: { type: Type.STRING, description: 'Esquema de rimas seguido (se aplicável)' },
-                estruturaMetrica: { type: Type.STRING, description: 'Métrica silábica e cadência (se aplicável)' },
+                descricao: { type: Type.STRING, description: 'Descrição compacta da produção e atmosfera sonora em Português de Portugal (1 a 2 parágrafos concisos).' },
+                tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: '5 a 8 etiquetas de estilo essenciais.' },
+                tema: { type: Type.STRING },
+                emocao: { type: Type.STRING },
+                genero: { type: Type.STRING },
+                bpm: { type: Type.STRING },
+                compasso: { type: Type.STRING },
+                tom: { type: Type.STRING },
+                swingGroove: { type: Type.STRING },
+                padraoBateria: { type: Type.STRING },
+                linhaBaixo: { type: Type.STRING },
+                samplesSintetizadores: { type: Type.STRING },
+                estruturaBatida: { type: Type.STRING },
+                instrumentos: { type: Type.ARRAY, items: { type: Type.STRING } },
+                tipoVoz: { type: Type.STRING },
+                atmosfera: { type: Type.STRING },
+                producao: { type: Type.STRING },
               },
               required: ['descricao', 'tags'],
             },
-            youtubeSeo: {
-              type: Type.OBJECT,
-              properties: {
-                titulos: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '5 opções de títulos com no máximo 70 caracteres cada, palavra-chave no início e gancho emocional.',
-                },
-                descricao: {
-                  type: Type.STRING,
-                  description: 'Descrição completa para YouTube com no máximo 5000 caracteres (gancho nas 2 primeiras linhas, resumo, letra, estilo, apelo à ação).',
-                },
-                tags: {
-                  type: Type.STRING,
-                  description: 'Tags separadas por vírgula com no máximo 500 caracteres, da mais específica à geral.',
-                },
-                hashtags: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '3 a 5 hashtags começando por #.',
-                },
-                textoMiniatura: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '3 opções curtas para miniatura com no máximo 4 palavras cada.',
-                },
-                capitulos: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: 'Capítulos e marcas de tempo da música (ex: 0:00 Intro, etc.).',
-                },
-                comentarioFixado: {
-                  type: Type.STRING,
-                  description: 'Pergunta engajadora para fixar no topo dos comentários.',
-                },
-                palavrasChave: {
-                  type: Type.OBJECT,
-                  properties: {
-                    principal: { type: Type.STRING },
-                    secundarias: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    caudaLonga: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  },
-                  required: ['principal', 'secundarias', 'caudaLonga'],
-                },
-              },
-              required: ['titulos', 'descricao', 'tags', 'hashtags', 'textoMiniatura', 'comentarioFixado', 'palavrasChave'],
-            },
           },
-          required: ['isInstrumental', 'letra', 'estilo', 'youtubeSeo'],
+          required: ['isInstrumental', 'letra', 'estilo'],
         },
       },
     });
 
-    const responseText = response.text;
-    if (!responseText) {
-      throw new Error('O modelo não devolveu texto.');
+    let fullText = '';
+    let hasSentLyricsStep = false;
+    let hasSentStyleStep = false;
+
+    for await (const chunk of stream) {
+      const chunkText = chunk.text || '';
+      fullText += chunkText;
+
+      // Progressively notify the client based on incoming stream content
+      if (!hasSentLyricsStep && (fullText.includes('"letra"') || fullText.length > 80)) {
+        hasSentLyricsStep = true;
+        sendEvent({
+          step: 'lyrics',
+          message: 'A escrever a letra alternativa...',
+          detail: 'A alinhar métrica silábica, rimas e estrutura [Verso]/[Refrão].',
+        });
+      }
+
+      if (!hasSentStyleStep && (fullText.includes('"estilo"') || fullText.length > 500)) {
+        hasSentStyleStep = true;
+        sendEvent({
+          step: 'style',
+          message: 'A criar o estilo musical...',
+          detail: 'A compilar etiquetas sonoras, timbres e parâmetros acústicos.',
+        });
+      }
     }
 
-    let parsedResult;
+    if (!fullText) {
+      throw new Error('O modelo não devolveu resposta de áudio.');
+    }
+
+    let parsedResult: any;
     try {
-      parsedResult = JSON.parse(responseText);
+      parsedResult = JSON.parse(fullText);
     } catch {
-      // Fallback: search for JSON block
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        parsedResult = JSON.parse(jsonMatch[0]);
+      const match = fullText.match(/\{[\s\S]*\}/);
+      if (match) {
+        parsedResult = JSON.parse(match[0]);
       } else {
-        throw new Error('Falha ao interpretar a resposta JSON do modelo.');
+        throw new Error('Falha ao interpretar JSON gerado pelo modelo.');
       }
     }
-
-    // Helper to calculate total character count of the style text representation
-    const formatStyleForCount = (style: any): string => {
-      if (!style) return '';
-      if (typeof style === 'string') return style.trim();
-      const parts: string[] = [];
-      if (style.descricao) parts.push(style.descricao.trim());
-      if (style.tags && Array.isArray(style.tags) && style.tags.length > 0) {
-        parts.push(`Etiquetas: ${style.tags.join(', ')}`);
-      }
-      const details: string[] = [];
-      if (style.bpm) details.push(`BPM: ${style.bpm}`);
-      if (style.compasso) details.push(`Compasso: ${style.compasso}`);
-      if (style.tom) details.push(`Tom: ${style.tom}`);
-      if (style.genero) details.push(`Género: ${style.genero}`);
-      if (style.swingGroove) details.push(`Groove: ${style.swingGroove}`);
-      if (style.padraoBateria) details.push(`Bateria: ${style.padraoBateria}`);
-      if (style.linhaBaixo) details.push(`Baixo: ${style.linhaBaixo}`);
-      if (style.emocao) details.push(`Emoção: ${style.emocao}`);
-      if (style.tipoVoz) details.push(`Voz: ${style.tipoVoz}`);
-      if (style.atmosfera) details.push(`Atmosfera: ${style.atmosfera}`);
-      if (style.producao) details.push(`Produção: ${style.producao}`);
-      if (style.estruturaBatida) details.push(`Estrutura: ${style.estruturaBatida}`);
-      if (style.instrumentos && Array.isArray(style.instrumentos) && style.instrumentos.length > 0) {
-        details.push(`Instrumentos: ${style.instrumentos.join(', ')}`);
-      }
-      if (details.length > 0) {
-        parts.push(`Parâmetros: ${details.join(' · ')}`);
-      }
-      return parts.join('\n\n').trim();
-    };
-
-    const MAX_LETRA_CHARS = 4500;
-    const MAX_ESTILO_CHARS = 950;
 
     const isInstrumental = Boolean(parsedResult.isInstrumental);
     let currentLetra = isInstrumental ? 'Instrumental: sem letra' : (parsedResult.letra || '');
     let currentEstilo = parsedResult.estilo;
+    let idiomaLetra = parsedResult.idiomaLetra || (isInstrumental ? 'Instrumental' : 'Português (Portugal)');
+
+    // Contagem no código dos limites:
+    const MAX_LETRA_CHARS = 4500;
+    const MAX_ESTILO_CHARS = 950;
+
     let styleText = formatStyleForCount(currentEstilo);
 
-    // If either exceeds the limit, rewrite and summarize
-    if ((!isInstrumental && currentLetra.length > MAX_LETRA_CHARS) || styleText.length > MAX_ESTILO_CHARS) {
-      console.log(`Excedeu limites (Letra: ${currentLetra.length}/${MAX_LETRA_CHARS}, Estilo: ${styleText.length}/${MAX_ESTILO_CHARS}). A resumir...`);
+    // Se a letra passar do limite (4500 caracteres), faz chamada dedicada super rápida só para encurtar
+    if (!isInstrumental && currentLetra.length > MAX_LETRA_CHARS) {
+      sendEvent({
+        step: 'condensing',
+        message: 'A encurtar letra para cumprir o limite...',
+        detail: `Letra atingiu ${currentLetra.length} caracteres. A resumir para <= ${MAX_LETRA_CHARS}.`,
+      });
+
       try {
-        const rewriteRes = await ai.models.generateContent({
+        const shortenLetraRes = await ai.models.generateContent({
           model: 'gemini-3.8-flash',
-          contents: [
-            {
-              text: `O resultado anterior ultrapassou os limites estritos de caracteres.
-LIMITES OBRIGATÓRIOS:
-1. "letra": ${isInstrumental ? 'Mantém exatamente "Instrumental: sem letra"' : `MÁXIMO 4500 CARACTERES (atualmente: ${currentLetra.length}). Resume a letra mantendo as secções [Verso], [Refrão], [Ponte], métrica e melodia, garantindo estritamente menos de 4500 caracteres.`}
-2. "estilo": MÁXIMO 950 CARACTERES (atualmente: ${styleText.length}). Resume a descrição e parâmetros em Português de Portugal para garantir estritamente menos de 950 caracteres no total.
+          contents: `A seguinte letra tem ${currentLetra.length} caracteres e ultrapassa o limite de 4500 caracteres.
+Resume e encurta a letra para que tenha rigorosamente MENOS DE 4500 caracteres no total, preservando a métrica, as rimas e as secções [Verso], [Refrão] e [Ponte]:
 
-CONTEÚDO ANTERIOR:
-${isInstrumental ? 'Faixa Instrumental/Batida' : `Letra:\n${currentLetra}`}
-
-Estilo:
-${JSON.stringify(currentEstilo)}
-
-Devolve o JSON com "isInstrumental", "letra", "estilo" e "idiomaLetra" garantindo o cumprimento absoluto dos limites.`,
-            },
-          ],
+${currentLetra}`,
           config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
               properties: {
-                isInstrumental: { type: Type.BOOLEAN },
-                idiomaLetra: { type: Type.STRING },
                 letra: { type: Type.STRING },
-                estilo: {
-                  type: Type.OBJECT,
-                  properties: {
-                    descricao: { type: Type.STRING },
-                    tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    bpm: { type: Type.STRING },
-                    compasso: { type: Type.STRING },
-                    tom: { type: Type.STRING },
-                    genero: { type: Type.STRING },
-                    swingGroove: { type: Type.STRING },
-                    padraoBateria: { type: Type.STRING },
-                    linhaBaixo: { type: Type.STRING },
-                    samplesSintetizadores: { type: Type.STRING },
-                    estruturaBatida: { type: Type.STRING },
-                    emocao: { type: Type.STRING },
-                    tipoVoz: { type: Type.STRING },
-                    atmosfera: { type: Type.STRING },
-                    producao: { type: Type.STRING },
-                    instrumentos: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  },
-                  required: ['descricao', 'tags'],
-                },
               },
-              required: ['isInstrumental', 'letra', 'estilo'],
+              required: ['letra'],
             },
           },
         });
 
-        if (rewriteRes.text) {
-          const reParsed = JSON.parse(rewriteRes.text);
-          if (!isInstrumental && reParsed.letra) currentLetra = reParsed.letra;
-          if (reParsed.estilo) currentEstilo = reParsed.estilo;
-          if (reParsed.idiomaLetra) parsedResult.idiomaLetra = reParsed.idiomaLetra;
+        if (shortenLetraRes.text) {
+          const parsedShort = JSON.parse(shortenLetraRes.text);
+          if (parsedShort.letra) {
+            currentLetra = parsedShort.letra;
+          }
         }
       } catch (err) {
-        console.warn('Erro ao condensar com modelo:', err);
+        console.warn('Erro ao encurtar letra via modelo, aplicando corte seguro:', err);
+      }
+
+      // Safeguard slice if still over
+      if (currentLetra.length > MAX_LETRA_CHARS) {
+        let cut = currentLetra.lastIndexOf('\n', MAX_LETRA_CHARS);
+        if (cut < 4000) cut = MAX_LETRA_CHARS;
+        currentLetra = currentLetra.slice(0, cut).trim();
       }
     }
 
-    if (isInstrumental) {
-      currentLetra = 'Instrumental: sem letra';
-    } else if (currentLetra.length > MAX_LETRA_CHARS) {
-      let cutIdx = currentLetra.lastIndexOf('\n', MAX_LETRA_CHARS);
-      if (cutIdx === -1 || cutIdx < MAX_LETRA_CHARS - 300) {
-        cutIdx = currentLetra.lastIndexOf('.', MAX_LETRA_CHARS);
-      }
-      if (cutIdx === -1 || cutIdx < 2000) cutIdx = MAX_LETRA_CHARS;
-      currentLetra = currentLetra.slice(0, cutIdx).trim();
-    }
+    // Se o estilo passar do limite (950 caracteres), faz chamada dedicada rápida só para encurtar
+    styleText = formatStyleForCount(currentEstilo);
+    if (styleText.length > MAX_ESTILO_CHARS) {
+      sendEvent({
+        step: 'condensing',
+        message: 'A encurtar estilo para cumprir o limite...',
+        detail: `Estilo atingiu ${styleText.length} caracteres. A condensar para <= ${MAX_ESTILO_CHARS}.`,
+      });
 
-    let finalStyleLen = formatStyleForCount(currentEstilo).length;
-    if (finalStyleLen > MAX_ESTILO_CHARS) {
-      if (typeof currentEstilo === 'object' && currentEstilo !== null) {
-        const excess = finalStyleLen - MAX_ESTILO_CHARS;
-        const desc = currentEstilo.descricao || '';
-        if (desc.length > excess + 40) {
-          currentEstilo.descricao = desc.slice(0, desc.length - excess - 10).trim() + '...';
-        } else if (Array.isArray(currentEstilo.tags) && currentEstilo.tags.length > 4) {
-          currentEstilo.tags = currentEstilo.tags.slice(0, 4);
-        }
-      } else if (typeof currentEstilo === 'string') {
-        currentEstilo = currentEstilo.slice(0, MAX_ESTILO_CHARS).trim();
-      }
-    }
+      try {
+        const shortenStyleRes = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: `O seguinte estilo musical tem ${styleText.length} caracteres e ultrapassa o limite estrito de 950 caracteres.
+Resume a descrição e etiquetas em Português de Portugal de modo compacto para que o somatório total tenha rigorosamente MENOS DE 950 caracteres:
 
-    // Ensure strict limits for YouTube SEO package
-    if (parsedResult.youtubeSeo) {
-      if (Array.isArray(parsedResult.youtubeSeo.titulos)) {
-        parsedResult.youtubeSeo.titulos = parsedResult.youtubeSeo.titulos.slice(0, 5).map((t: string) => {
-          if (typeof t !== 'string') return '';
-          return t.length > 70 ? t.slice(0, 67).trim() + '...' : t;
+${JSON.stringify(currentEstilo)}`,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                descricao: { type: Type.STRING },
+                tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+                bpm: { type: Type.STRING },
+                tom: { type: Type.STRING },
+                genero: { type: Type.STRING },
+                emocao: { type: Type.STRING },
+                tipoVoz: { type: Type.STRING },
+              },
+              required: ['descricao', 'tags'],
+            },
+          },
         });
-      }
-      if (typeof parsedResult.youtubeSeo.descricao === 'string' && parsedResult.youtubeSeo.descricao.length > 5000) {
-        parsedResult.youtubeSeo.descricao = parsedResult.youtubeSeo.descricao.slice(0, 4990).trim() + '...';
-      }
-      if (typeof parsedResult.youtubeSeo.tags === 'string' && parsedResult.youtubeSeo.tags.length > 500) {
-        let tagsTrimmed = parsedResult.youtubeSeo.tags.slice(0, 500);
-        const lastComma = tagsTrimmed.lastIndexOf(',');
-        if (lastComma > 250) {
-          tagsTrimmed = tagsTrimmed.slice(0, lastComma);
+
+        if (shortenStyleRes.text) {
+          const parsedShortStyle = JSON.parse(shortenStyleRes.text);
+          currentEstilo = {
+            ...currentEstilo,
+            ...parsedShortStyle,
+          };
         }
-        parsedResult.youtubeSeo.tags = tagsTrimmed.trim();
+      } catch (err) {
+        console.warn('Erro ao encurtar estilo via modelo, aplicando condensação direta:', err);
       }
-      if (Array.isArray(parsedResult.youtubeSeo.hashtags)) {
-        parsedResult.youtubeSeo.hashtags = parsedResult.youtubeSeo.hashtags.slice(0, 5).map((h: string) =>
-          h.startsWith('#') ? h : `#${h}`
-        );
-      }
-      if (Array.isArray(parsedResult.youtubeSeo.textoMiniatura)) {
-        parsedResult.youtubeSeo.textoMiniatura = parsedResult.youtubeSeo.textoMiniatura.slice(0, 3).map((m: string) => {
-          if (typeof m !== 'string') return '';
-          const words = m.trim().split(/\s+/);
-          return words.length > 4 ? words.slice(0, 4).join(' ') : m;
-        });
+
+      // Safeguard slice
+      if (formatStyleForCount(currentEstilo).length > MAX_ESTILO_CHARS) {
+        if (typeof currentEstilo === 'object' && currentEstilo.descricao) {
+          currentEstilo.descricao = currentEstilo.descricao.slice(0, 450).trim() + '...';
+        }
+        if (Array.isArray(currentEstilo.tags) && currentEstilo.tags.length > 5) {
+          currentEstilo.tags = currentEstilo.tags.slice(0, 5);
+        }
       }
     }
 
-    parsedResult.isInstrumental = isInstrumental;
-    parsedResult.letra = currentLetra;
-    parsedResult.estilo = currentEstilo;
-
-    return res.json(parsedResult);
-  } catch (error: any) {
-    console.error('Erro ao processar música com Gemini:', error);
-
-    const errorMessage = error?.message || '';
-    if (errorMessage.includes('API key not valid') || errorMessage.includes('invalid api key')) {
-      return res.status(401).json({
-        error: 'Chave da API Gemini inválida ou não autorizada. Verifica as tuas credenciais.',
-      });
-    }
-
-    if (errorMessage.includes('RESOURCE_EXHAUSTED') || errorMessage.includes('quota')) {
-      return res.status(429).json({
-        error: 'Limite de quota do modelo Gemini atingido. Por favor aguarda alguns momentos antes de tentar novamente.',
-      });
-    }
-
-    if (errorMessage.includes('SAFETY') || errorMessage.includes('blocked')) {
-      return res.status(400).json({
-        error: 'O áudio foi filtrado pelos critérios de segurança do modelo.',
-      });
-    }
-
-    return res.status(500).json({
-      error: errorMessage || 'Falha ao processar o áudio com o modelo Gemini. Por favor tenta novamente.',
+    // Guarda a análise em memória para que "Gerar outra versão" e "Pacote YouTube" não voltem a reprocessar o áudio
+    const analysisId = 'ana_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+    audioAnalysisCache.set(analysisId, {
+      analysisId,
+      isInstrumental,
+      idiomaLetra,
+      estilo: currentEstilo,
+      letra: currentLetra,
+      fileName,
+      timestamp: Date.now(),
     });
+
+    // Envia o resultado final imediatamente
+    sendEvent({
+      step: 'done',
+      message: 'Versão alternativa gerada com sucesso!',
+      result: {
+        analysisId,
+        isInstrumental,
+        idiomaLetra,
+        letra: currentLetra,
+        estilo: currentEstilo,
+      },
+    });
+
+    res.end();
+  } catch (error: any) {
+    console.error('Erro em /api/create-alternative:', error);
+    sendEvent({
+      step: 'error',
+      message: error?.message || 'Falha ao processar áudio.',
+      error: error?.message || 'Ocorreu um erro ao comunicar com o modelo Gemini.',
+    });
+    res.end();
   }
 });
 
-// Endpoint to create lyrics specifically for an instrumental beat
-app.post('/api/create-lyrics-for-beat', async (req, res) => {
+/**
+ * 2. CHAMADA 2: "Gerar outra versão"
+ * Reutiliza a análise do áudio em memória (analysisId), SEM re-enviar ou re-ouvir o ficheiro!
+ * Ultra-rápido com Gemini Flash (texto puro).
+ */
+app.post('/api/regenerate-lyrics', async (req, res) => {
   try {
-    const { audioBase64, mimeType, beatStyle, idioma } = req.body;
+    const { analysisId, estilo, isInstrumental, idiomaLetra } = req.body;
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({
-        error: 'Chave da API Gemini não configurada no servidor.',
+      return res.status(500).json({ error: 'Chave da API Gemini não configurada.' });
+    }
+
+    // Lookup cached analysis if available
+    const cached = analysisId ? audioAnalysisCache.get(analysisId) : null;
+    const finalEstilo = cached?.estilo || estilo;
+    const finalIsInstrumental = cached ? cached.isInstrumental : Boolean(isInstrumental);
+    const finalIdioma = cached?.idiomaLetra || idiomaLetra || 'Português (Portugal)';
+
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+
+    if (finalIsInstrumental) {
+      return res.json({
+        letra: 'Instrumental: sem letra',
+        idiomaLetra: finalIdioma,
+        analysisId,
       });
     }
+
+    const isEnglish = finalIdioma.toLowerCase().includes('ingl');
+
+    const prompt = `Gera uma NOVA variação de letra alternativa completa baseada neste perfil musical já analisado:
+Idioma: ${finalIdioma} (${isEnglish ? 'Inglês internacional neutro' : 'Português de Portugal europeu'}).
+Perfil sonoro da música:
+${typeof finalEstilo === 'string' ? finalEstilo : JSON.stringify(finalEstilo, null, 2)}
+
+REGRAS:
+- Escreve uma letra 100% inédita com nova poesia e imagens, mantendo as secções [Verso], [Refrão], [Verso 2], [Refrão], [Ponte].
+- Mesma cadência e esquema de rimas para caber na mesma melodia.
+- MÁXIMO ABSOLUTO DE 4500 CARACTERES.
+
+Devolve estritamente um JSON com o campo "letra".`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            letra: { type: Type.STRING },
+          },
+          required: ['letra'],
+        },
+      },
+    });
+
+    let newLetra = '';
+    try {
+      const parsed = JSON.parse(response.text || '{}');
+      newLetra = parsed.letra || '';
+    } catch {
+      newLetra = response.text || '';
+    }
+
+    // Check code limit
+    const MAX_LETRA_CHARS = 4500;
+    if (newLetra.length > MAX_LETRA_CHARS) {
+      try {
+        const shortenRes = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: `Encurta esta letra para ter estritamente menos de 4500 caracteres, mantendo [Verso], [Refrão], [Ponte] e as rimas:\n\n${newLetra}`,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: { letra: { type: Type.STRING } },
+              required: ['letra'],
+            },
+          },
+        });
+        const shortenParsed = JSON.parse(shortenRes.text || '{}');
+        if (shortenParsed.letra) newLetra = shortenParsed.letra;
+      } catch {
+        newLetra = newLetra.slice(0, MAX_LETRA_CHARS).trim();
+      }
+    }
+
+    // Update cache with the new lyrics
+    if (analysisId && cached) {
+      cached.letra = newLetra;
+    }
+
+    return res.json({
+      letra: newLetra,
+      idiomaLetra: finalIdioma,
+      analysisId,
+    });
+  } catch (error: any) {
+    console.error('Erro em /api/regenerate-lyrics:', error);
+    return res.status(500).json({ error: error?.message || 'Falha ao gerar outra versão de letra.' });
+  }
+});
+
+/**
+ * 3. CHAMADA 3: "Gerar pacote YouTube" (SEO)
+ * Chamado APENAS quando o utilizador clica explicitamente em "Gerar pacote YouTube".
+ * Usa a análise do áudio guardada em memória e a letra/estilo existentes (SEM áudio).
+ */
+app.post('/api/generate-youtube-seo', async (req, res) => {
+  try {
+    const { analysisId, letra, estilo, idiomaLetra } = req.body;
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'Chave da API Gemini não configurada no servidor.' });
+    }
+
+    const cached = analysisId ? audioAnalysisCache.get(analysisId) : null;
+    const currentLetra = letra || cached?.letra || 'Instrumental: sem letra';
+    const currentEstilo = estilo || cached?.estilo;
+    const currentIdioma = idiomaLetra || cached?.idiomaLetra || 'Português (Portugal)';
+
+    const isEnglish = currentIdioma.toLowerCase().includes('ingl');
+
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+
+    const systemInstruction = `És um especialista sénior em YouTube SEO e marketing musical internacional.
+A tua missão é gerar um pacote de SEO estratégico para o lançamento desta música no YouTube.
+Idioma do pacote: ${isEnglish ? 'Inglês Internacional' : 'Português de Portugal'}.
+
+REGRAS:
+1. TÍTULOS: 5 opções, com palavra-chave principal no início, gancho emocional, sem clickbait enganoso, com no máximo 70 caracteres cada.
+2. DESCRIÇÃO: até 5000 caracteres. As 2 primeiras linhas DEVEM conter palavra-chave e gancho (visíveis antes de "mostrar mais"). Depois inclui: resumo conceptual, a letra completa (ou descrição da batida), informações de estilo sonoro e apelo à ação (subscrever, comentar).
+3. TAGS: lista separada por vírgulas, até 500 caracteres total, da mais específica à geral.
+4. HASHTAGS: 3 a 5 hashtags começando por #.
+5. TEXTO DA MINIATURA: 3 opções curtas com no máximo 4 palavras cada.
+6. CAPÍTULOS: marcas de tempo sequenciais (ex: 0:00 Intro, etc.).
+7. COMENTÁRIO FIXADO: pergunta envolvente para engajamento nos comentários.
+8. PALAVRAS-CHAVE: principal, secundárias e de cauda longa.
+9. NUNCA uses o nome do artista original ou da música original de forma enganosa.`;
+
+    const userPrompt = `Gera o Pacote YouTube SEO completo para esta música:
+Idioma: ${currentIdioma}
+Estilo sonoro:
+${typeof currentEstilo === 'string' ? currentEstilo : JSON.stringify(currentEstilo, null, 2)}
+
+Letra da música:
+${currentLetra}
+
+Devolve estritamente o JSON com o pacote YouTube SEO.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: userPrompt,
+      config: {
+        systemInstruction,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            titulos: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: '5 opções de títulos com no máximo 70 caracteres cada.',
+            },
+            descricao: {
+              type: Type.STRING,
+              description: 'Descrição completa para YouTube com no máximo 5000 caracteres.',
+            },
+            tags: {
+              type: Type.STRING,
+              description: 'Tags separadas por vírgula com no máximo 500 caracteres.',
+            },
+            hashtags: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: '3 a 5 hashtags.',
+            },
+            textoMiniatura: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: '3 opções curtas de thumbnail com no máximo 4 palavras cada.',
+            },
+            capitulos: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            comentarioFixado: {
+              type: Type.STRING,
+            },
+            palavrasChave: {
+              type: Type.OBJECT,
+              properties: {
+                principal: { type: Type.STRING },
+                secundarias: { type: Type.ARRAY, items: { type: Type.STRING } },
+                caudaLonga: { type: Type.ARRAY, items: { type: Type.STRING } },
+              },
+              required: ['principal', 'secundarias', 'caudaLonga'],
+            },
+          },
+          required: ['titulos', 'descricao', 'tags', 'hashtags', 'textoMiniatura', 'comentarioFixado', 'palavrasChave'],
+        },
+      },
+    });
+
+    let seoResult: any;
+    try {
+      seoResult = JSON.parse(response.text || '{}');
+    } catch {
+      const match = response.text?.match(/\{[\s\S]*\}/);
+      if (match) {
+        seoResult = JSON.parse(match[0]);
+      } else {
+        throw new Error('Falha ao interpretar resposta JSON do pacote YouTube.');
+      }
+    }
+
+    // Verificação estrita de limites no código (TypeScript):
+    // 1. Títulos <= 70 chars
+    if (Array.isArray(seoResult.titulos)) {
+      seoResult.titulos = seoResult.titulos.slice(0, 5).map((t: string) => {
+        if (typeof t !== 'string') return '';
+        return t.length > 70 ? t.slice(0, 67).trim() + '...' : t;
+      });
+    }
+
+    // 2. Descrição <= 5000 chars (se exceder, chamada rápida para condensar só a descrição)
+    if (typeof seoResult.descricao === 'string' && seoResult.descricao.length > 5000) {
+      try {
+        const shortenDesc = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: `A seguinte descrição de YouTube tem ${seoResult.descricao.length} caracteres e ultrapassa 5000 caracteres. Resume para ter estritamente menos de 5000 caracteres mantendo gancho, resumo e letra:\n\n${seoResult.descricao}`,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: { descricao: { type: Type.STRING } },
+              required: ['descricao'],
+            },
+          },
+        });
+        const parsedDesc = JSON.parse(shortenDesc.text || '{}');
+        if (parsedDesc.descricao) seoResult.descricao = parsedDesc.descricao;
+      } catch {
+        seoResult.descricao = seoResult.descricao.slice(0, 4990).trim() + '...';
+      }
+    }
+
+    // 3. Tags <= 500 chars
+    if (typeof seoResult.tags === 'string' && seoResult.tags.length > 500) {
+      let trimmed = seoResult.tags.slice(0, 500);
+      const comma = trimmed.lastIndexOf(',');
+      if (comma > 250) trimmed = trimmed.slice(0, comma);
+      seoResult.tags = trimmed.trim();
+    }
+
+    // 4. Hashtags 3-5
+    if (Array.isArray(seoResult.hashtags)) {
+      seoResult.hashtags = seoResult.hashtags.slice(0, 5).map((h: string) => (h.startsWith('#') ? h : `#${h}`));
+    }
+
+    // 5. Miniatura <= 4 palavras
+    if (Array.isArray(seoResult.textoMiniatura)) {
+      seoResult.textoMiniatura = seoResult.textoMiniatura.slice(0, 3).map((m: string) => {
+        if (typeof m !== 'string') return '';
+        const words = m.trim().split(/\s+/);
+        return words.length > 4 ? words.slice(0, 4).join(' ') : m;
+      });
+    }
+
+    return res.json({ youtubeSeo: seoResult });
+  } catch (error: any) {
+    console.error('Erro em /api/generate-youtube-seo:', error);
+    return res.status(500).json({ error: error?.message || 'Falha ao gerar o pacote YouTube SEO.' });
+  }
+});
+
+/**
+ * 4. Letra para batida instrumental:
+ * Reutiliza a análise em memória sem re-enviar áudio.
+ */
+app.post('/api/create-lyrics-for-beat', async (req, res) => {
+  try {
+    const { analysisId, beatStyle, idioma } = req.body;
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'Chave da API Gemini não configurada no servidor.' });
+    }
+
+    const cached = analysisId ? audioAnalysisCache.get(analysisId) : null;
+    const finalStyle = cached?.estilo || beatStyle;
 
     const ai = new GoogleGenAI({
       apiKey,
@@ -521,143 +746,43 @@ app.post('/api/create-lyrics-for-beat', async (req, res) => {
     const isEnglish = idioma === 'en' || (typeof idioma === 'string' && idioma.toLowerCase().includes('ingl'));
     const targetLanguageLabel = isEnglish ? 'Inglês (Internacional)' : 'Português (Portugal)';
 
-    const systemInstruction = `És um letrista profissional e compositor musical de elite.
-A tua missão é compor uma letra 100% original que encaixe com perfeição métrica, rítmica e cadencial nesta batida instrumental, e gerar um pacote YouTube SEO atualizado refletindo a nova canção lírica.
-
-REGRAS OBRIGATÓRIAS:
-1. IDIOMA DA LETRA E DO PACOTE YOUTUBE:
-${
-  isEnglish
-    ? '   - Escreve estritamente em Inglês Internacional neutro, cantável e melódico, sem gíria regional.'
-    : '   - Escreve estritamente em Português de Portugal (vocabulário europeu, ortografia e expressões de Portugal, nunca brasileiras).'
-}
-2. ENCAIXE NA BATIDA:
-   - A letra deve respeitar o tempo (BPM), compasso, swing e dinamismo da batida.
-   - Organiza em secções líricas bem definidas:
-     [Verso]
-     [Refrão]
-     [Verso 2]
-     [Refrão]
-     [Ponte]
-     (podes incluir [Refrão Final] ou [Outro]).
-   - Rimas fluidas e acentuação silábica sincronizada com o ritmo do kick e snare.
-3. LIMITE DE TAMANHO DA LETRA:
-   - MÁXIMO ABSOLUTO DE 4500 CARACTERES (incluindo marcações [Verso], quebras de linha e pontuação).
-   - NUNCA ultrapasses 4500 caracteres.
-4. PACOTE YOUTUBE SEO ATUALIZADO:
-   - Gera um pacote YouTube SEO correspondente à nova versão com letra:
-     * 5 títulos <= 70 chars cada, sem clickbait
-     * Descrição <= 5000 chars com as duas primeiras linhas de gancho, resumo, a letra completa inserida e apelo à ação
-     * Tags <= 500 chars separadas por vírgula
-     * 3-5 hashtags
-     * 3 opções de miniatura <= 4 palavras
-     * Capítulos com marcas de tempo
-     * Comentário fixado para engajamento
-     * Palavras-chave estruturadas
-   - Nunca uses nomes originais de artistas ou músicas de forma enganosa.
-
-Devolve estritamente um JSON com os campos "letra" e "youtubeSeo".`;
-
-    const userPrompt = `Cria uma letra inédita e cativante para esta batida instrumental e o pacote de SEO para YouTube.
-Idioma selecionado: ${targetLanguageLabel}.
+    const prompt = `És um compositor profissional. Compõe uma letra inédita que encaixe com precisão rítmica nesta batida instrumental:
+Idioma: ${targetLanguageLabel} (${isEnglish ? 'Inglês neutro' : 'Português de Portugal'}).
 Detalhes da batida:
-${typeof beatStyle === 'string' ? beatStyle : JSON.stringify(beatStyle, null, 2)}
-Garante que a letra encaixa perfeitamente no ritmo (máx 4500 caracteres) e gera o pacote YouTube SEO correspondente (títulos <= 70 chars, descrição <= 5000 chars, tags <= 500 chars).`;
+${typeof finalStyle === 'string' ? finalStyle : JSON.stringify(finalStyle, null, 2)}
 
-    const contents: any[] = [];
-    if (audioBase64) {
-      const cleanBase64 = audioBase64.replace(/^data:audio\/[a-zA-Z0-9.+_-]+;base64,/, '');
-      contents.push({
-        inlineData: {
-          mimeType: mimeType || 'audio/mp3',
-          data: cleanBase64,
-        },
-      });
-    }
-    contents.push({ text: userPrompt });
+REGRAS:
+- Estrutura com [Verso], [Refrão], [Verso 2], [Refrão], [Ponte].
+- Rimas fluidas e acentuação sincronizada com a batida.
+- Máximo 4500 caracteres.
+
+Devolve estritamente um JSON com o campo "letra".`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
-      contents,
+      contents: prompt,
       config: {
-        systemInstruction,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            letra: {
-              type: Type.STRING,
-              description: 'Letra original adaptada à batida, estruturada com [Verso], [Refrão] e [Ponte], com no máximo 4500 caracteres.',
-            },
-            youtubeSeo: {
-              type: Type.OBJECT,
-              properties: {
-                titulos: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '5 opções de títulos com no máximo 70 caracteres cada.',
-                },
-                descricao: {
-                  type: Type.STRING,
-                  description: 'Descrição completa para YouTube com no máximo 5000 caracteres, contendo a nova letra.',
-                },
-                tags: {
-                  type: Type.STRING,
-                  description: 'Tags separadas por vírgula com no máximo 500 caracteres.',
-                },
-                hashtags: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '3 a 5 hashtags.',
-                },
-                textoMiniatura: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '3 opções curtas com no máximo 4 palavras cada.',
-                },
-                capitulos: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
-                comentarioFixado: {
-                  type: Type.STRING,
-                },
-                palavrasChave: {
-                  type: Type.OBJECT,
-                  properties: {
-                    principal: { type: Type.STRING },
-                    secundarias: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    caudaLonga: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  },
-                  required: ['principal', 'secundarias', 'caudaLonga'],
-                },
-              },
-              required: ['titulos', 'descricao', 'tags', 'hashtags', 'textoMiniatura', 'comentarioFixado', 'palavrasChave'],
-            },
+            letra: { type: Type.STRING },
           },
           required: ['letra'],
         },
       },
     });
 
-    const responseText = response.text;
-    if (!responseText) {
-      throw new Error('O modelo não devolveu texto.');
-    }
-
-    let parsedResult;
+    let letra = '';
     try {
-      parsedResult = JSON.parse(responseText);
+      const parsed = JSON.parse(response.text || '{}');
+      letra = parsed.letra || '';
     } catch {
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        parsedResult = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('Falha ao interpretar resposta JSON da letra.');
-      }
+      letra = response.text || '';
     }
 
-    let letra = parsedResult.letra || '';
+    // Limit check in code
     if (letra.length > 4500) {
       let cutPoint = letra.lastIndexOf('\n', 4500);
       if (cutPoint === -1 || cutPoint < 4200) {
@@ -667,48 +792,20 @@ Garante que a letra encaixa perfeitamente no ritmo (máx 4500 caracteres) e gera
       letra = letra.slice(0, cutPoint).trim();
     }
 
-    if (parsedResult.youtubeSeo) {
-      if (Array.isArray(parsedResult.youtubeSeo.titulos)) {
-        parsedResult.youtubeSeo.titulos = parsedResult.youtubeSeo.titulos.slice(0, 5).map((t: string) => {
-          if (typeof t !== 'string') return '';
-          return t.length > 70 ? t.slice(0, 67).trim() + '...' : t;
-        });
-      }
-      if (typeof parsedResult.youtubeSeo.descricao === 'string' && parsedResult.youtubeSeo.descricao.length > 5000) {
-        parsedResult.youtubeSeo.descricao = parsedResult.youtubeSeo.descricao.slice(0, 4990).trim() + '...';
-      }
-      if (typeof parsedResult.youtubeSeo.tags === 'string' && parsedResult.youtubeSeo.tags.length > 500) {
-        let tagsTrimmed = parsedResult.youtubeSeo.tags.slice(0, 500);
-        const lastComma = tagsTrimmed.lastIndexOf(',');
-        if (lastComma > 250) {
-          tagsTrimmed = tagsTrimmed.slice(0, lastComma);
-        }
-        parsedResult.youtubeSeo.tags = tagsTrimmed.trim();
-      }
-      if (Array.isArray(parsedResult.youtubeSeo.hashtags)) {
-        parsedResult.youtubeSeo.hashtags = parsedResult.youtubeSeo.hashtags.slice(0, 5).map((h: string) =>
-          h.startsWith('#') ? h : `#${h}`
-        );
-      }
-      if (Array.isArray(parsedResult.youtubeSeo.textoMiniatura)) {
-        parsedResult.youtubeSeo.textoMiniatura = parsedResult.youtubeSeo.textoMiniatura.slice(0, 3).map((m: string) => {
-          if (typeof m !== 'string') return '';
-          const words = m.trim().split(/\s+/);
-          return words.length > 4 ? words.slice(0, 4).join(' ') : m;
-        });
-      }
+    // Update cache
+    if (analysisId && cached) {
+      cached.letra = letra;
+      cached.idiomaLetra = targetLanguageLabel;
     }
 
     return res.json({
       letra,
       idiomaLetra: targetLanguageLabel,
-      youtubeSeo: parsedResult.youtubeSeo,
+      analysisId,
     });
   } catch (error: any) {
-    console.error('Erro ao gerar letra para batida:', error);
-    return res.status(500).json({
-      error: error?.message || 'Falha ao compor letra para a batida.',
-    });
+    console.error('Erro em /api/create-lyrics-for-beat:', error);
+    return res.status(500).json({ error: error?.message || 'Falha ao compor letra para a batida.' });
   }
 });
 

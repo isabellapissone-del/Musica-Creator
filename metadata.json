@@ -1,6 +1,6 @@
 {
   "name": "Music Creator",
-  "description": "Cria versões alternativas de músicas a partir de ficheiros de áudio com inteligência artificial.",
+  "description": "Cria versões alternativas de músicas a partir de ficheiros de áudio ou links do YouTube com inteligência artificial.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

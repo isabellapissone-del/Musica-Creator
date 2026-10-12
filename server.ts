@@ -3,7 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, Type, ThinkingLevel, MediaResolution } from '@google/genai';
 
 dotenv.config();
 
@@ -79,6 +79,157 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Helper para mensagens amigáveis em Português
+function cleanGeminiErrorMessage(err: any): string {
+  const raw = String(err?.message || err || '');
+  if (
+    raw.includes('RESOURCE_EXHAUSTED') ||
+    raw.includes('429') ||
+    raw.includes('quota') ||
+    raw.includes('Quota exceeded')
+  ) {
+    return 'Limite de quota temporário atingido na API Gemini. Por favor aguarda alguns instantes ou tenta novamente mais tarde.';
+  }
+  if (
+    raw.includes('URL_UNREACHABLE') ||
+    raw.includes('Cannot fetch content') ||
+    raw.includes('INVALID_ARGUMENT')
+  ) {
+    return 'Não consegui aceder a este vídeo. Usa um vídeo público ou envia o ficheiro de áudio.';
+  }
+  if (
+    raw.includes('503') ||
+    raw.includes('high demand') ||
+    raw.includes('UNAVAILABLE')
+  ) {
+    return 'O modelo está atualmente com alta procura temporária. Por favor tenta novamente num instante.';
+  }
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      if (parsed?.error?.message) {
+        return cleanGeminiErrorMessage(parsed.error.message);
+      }
+    }
+  } catch {}
+  return raw || 'Ocorreu um erro no processamento da música.';
+}
+
+function extractApiErrorDetails(err: any): { code: string | number; message: string; full: string } {
+  const full = String(err?.message || err || '');
+  let code: string | number = err?.status || err?.code || 'API_ERROR';
+  let message: string = full;
+
+  try {
+    const match = full.match(/\{[\s\S]*\}/);
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      if (parsed?.error) {
+        if (parsed.error.code) code = parsed.error.code;
+        if (parsed.error.status) code = `${code !== 'API_ERROR' ? code + ' ' : ''}${parsed.error.status}`;
+        if (parsed.error.message) message = parsed.error.message;
+      }
+    }
+  } catch {}
+
+  return { code, message, full };
+}
+
+// YouTube helpers
+function isYouTubeUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const trimmed = url.trim();
+    const parsed = new URL(trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `https://${trimmed}`);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      host === 'youtu.be' ||
+      host === 'www.youtu.be' ||
+      host === 'youtube.com' ||
+      host === 'www.youtube.com' ||
+      host === 'm.youtube.com' ||
+      host === 'music.youtube.com'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function extractYouTubeVideoId(url: string): string | null {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const trimmed = url.trim();
+    const parsed = new URL(trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `https://${trimmed}`);
+    const host = parsed.hostname.toLowerCase();
+
+    if (host === 'youtu.be' || host === 'www.youtu.be') {
+      const id = parsed.pathname.slice(1).split('/')[0].split('?')[0];
+      return id && id.length >= 10 ? id : null;
+    }
+
+    if (parsed.pathname === '/watch') {
+      const v = parsed.searchParams.get('v');
+      return v && v.length >= 10 ? v : null;
+    }
+
+    const match = parsed.pathname.match(/\/(?:embed|v|shorts|live)\/([a-zA-Z0-9_-]{11})/);
+    if (match) return match[1];
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Endpoint para obter informações do vídeo do YouTube (título e miniatura)
+ * antes do processamento, permitindo que o utilizador confirme a música certa.
+ */
+app.post('/api/youtube-info', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url || !isYouTubeUrl(url)) {
+      return res.status(400).json({
+        error: 'O link tem de ser do YouTube (youtube.com ou youtu.be). Por favor verifica o URL colado.',
+      });
+    }
+
+    const videoId = extractYouTubeVideoId(url);
+    const cleanUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : url.trim();
+
+    // Consulta o oEmbed oficial do YouTube (funciona para vídeos públicos sem precisar de API Key)
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(cleanUrl)}&format=json`;
+    const response = await fetch(oembedUrl);
+
+    if (!response.ok) {
+      return res.status(400).json({
+        error: 'Não consegui aceder a este vídeo. Usa um vídeo público ou envia o ficheiro de áudio.',
+      });
+    }
+
+    const data = (await response.json()) as any;
+    const title = data.title || 'Vídeo do YouTube';
+    const author = data.author_name || '';
+    const thumbnailUrl =
+      data.thumbnail_url ||
+      (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : '');
+
+    return res.json({
+      title,
+      author,
+      thumbnailUrl,
+      videoId,
+      cleanUrl,
+    });
+  } catch (err: any) {
+    console.error('Erro em /api/youtube-info:', err);
+    return res.status(400).json({
+      error: 'Não consegui aceder a este vídeo. Usa um vídeo público ou envia o ficheiro de áudio.',
+    });
+  }
+});
+
 /**
  * 1. CHAMADA 1 (Streaming SSE):
  * Análise dos primeiros 3 minutos do áudio + Letra alternativa + Estilo musical.
@@ -97,13 +248,22 @@ app.post('/api/create-alternative', async (req, res) => {
   };
 
   try {
-    const { audioBase64, mimeType, fileName } = req.body;
+    const { audioBase64, mimeType, fileName, youtubeUrl } = req.body;
 
-    if (!audioBase64) {
+    if (!audioBase64 && !youtubeUrl) {
       sendEvent({
         step: 'error',
-        message: 'Nenhum ficheiro de áudio foi enviado.',
-        error: 'Nenhum ficheiro de áudio foi enviado. Por favor seleciona um ficheiro MP3 ou WAV.',
+        message: 'Nenhum ficheiro de áudio ou link do YouTube foi enviado.',
+        error: 'Por favor seleciona um ficheiro de áudio ou cola um link do YouTube.',
+      });
+      return res.end();
+    }
+
+    if (youtubeUrl && !isYouTubeUrl(youtubeUrl)) {
+      sendEvent({
+        step: 'error',
+        message: 'Link do YouTube inválido.',
+        error: 'O link tem de ser do YouTube (youtube.com ou youtu.be). Por favor verifica o URL colado.',
       });
       return res.end();
     }
@@ -118,20 +278,19 @@ app.post('/api/create-alternative', async (req, res) => {
       return res.end();
     }
 
-    // Step 1: Listening
-    sendEvent({
-      step: 'listening',
-      message: 'A ouvir os primeiros 3 minutos do áudio...',
-      detail: 'A analisar tom, BPM, ritmo, instrumentação e presença vocal.',
-    });
-
-    const cleanBase64 = audioBase64.replace(/^data:audio\/[a-zA-Z0-9.+_-]+;base64,/, '');
-
-    let geminiMime = (mimeType || 'audio/mp3').toLowerCase();
-    if (geminiMime === 'audio/wave' || geminiMime === 'audio/x-wav') {
-      geminiMime = 'audio/wav';
-    } else if (geminiMime === 'audio/mpeg') {
-      geminiMime = 'audio/mp3';
+    // Step 1: Listening / Accessing
+    if (youtubeUrl) {
+      sendEvent({
+        step: 'listening',
+        message: 'A aceder ao vídeo do YouTube (segundos 20s a 80s)...',
+        detail: 'A analisar 60 segundos com resolução leve e foco no áudio musical.',
+      });
+    } else {
+      sendEvent({
+        step: 'listening',
+        message: 'A ouvir os primeiros 3 minutos do áudio...',
+        detail: 'A analisar tom, BPM, ritmo, instrumentação e presença vocal.',
+      });
     }
 
     const ai = new GoogleGenAI({
@@ -143,37 +302,221 @@ app.post('/api/create-alternative', async (req, res) => {
       },
     });
 
+    const targetDesc = youtubeUrl
+      ? `vídeo do YouTube "${fileName || 'música'}" (segmento de 20s a 80s)`
+      : `ficheiro de áudio "${fileName || 'faixa'}" (primeiros 3 minutos)`;
+
     const systemInstruction = `És um produtor musical consagrado, engenheiro de som e letrista profissional de altíssima precisão métrica.
-A tua missão é ouvir com a máxima atenção os primeiros 3 minutos (0:00 a 3:00) do ficheiro de áudio fornecido e gerar uma versão alternativa em texto, de forma direta e rápida.
+A tua missão é analisar com a máxima atenção o ${targetDesc} e gerar uma versão alternativa em texto, de forma direta e rápida. Foca-te primordialmente na melodia, letra vocal, ritmo e instrumentação.
 
 REGRAS OBRIGATÓRIAS:
-1. IDIOMA:
-   - A descrição do estilo musical e todos os seus campos DEVEM FICAR SEMPRE EM PORTUGUÊS DE PORTUGAL (vocabulário e sintaxe de Portugal: "ficheiro", "bateria", "mistura").
-   - Letra alternativa (quando houver voz cantada):
-     * Se for Português: Português de Portugal europeu.
-     * Se for Inglês: Inglês internacional neutro.
-     * Outro idioma: mantém o idioma original da canção.
-2. DETEÇÃO DE MODO INSTRUMENTAL (BATIDA / BEAT):
-   - Se a faixa NÃO tiver voz cantada contínua, ou tiver APENAS samples vocais curtos / ad-libs / efeitos DJ:
-     * 'isInstrumental': true.
-     * 'letra': EXATAMENTE "Instrumental: sem letra".
-     * 'estilo': descreve a batida com máxima fidelidade (BPM, compasso, tom, swing/groove, bateria, baixo, sintetizadores, atmosfera e estrutura).
-3. QUANDO A MÚSICA TIVER LETRA CANTADA REAL ('isInstrumental': false):
+1. IDIOMA E DETETOR:
+   - Deteta o idioma cantado na música ou no vídeo.
+   - Escreve a letra alternativa E a descrição do estilo musical (incluindo todas as etiquetas de estilo) nesse mesmo idioma detetado.
+   - Se for Português: estritamente português de Portugal (vocabulário, ortografia e expressões europeias, nunca brasileiras).
+   - Se for Inglês: inglês internacional neutro, sem gíria regional.
+   - Outro idioma: mantém o idioma original.
+   - Músicas com mais de um idioma: usa o idioma predominante.
+   - Música instrumental ou sem idioma identificável: escreve o estilo em português de Portugal, e a letra como "Instrumental: sem letra".
+   - Devolve no campo "idiomaLetra" o nome do idioma detetado.
+   - Se houver pouca certeza do idioma ou do significado de uma expressão (especialmente em idiomas africanos), mantém a expressão original em vez de a inventar, e adiciona o aviso: "Este idioma pode ter menos precisão. Revê a letra antes de publicar." ao final da letra.
+2. QUANDO A MÚSICA TIVER LETRA CANTADA REAL ('isInstrumental': false):
    - Escreve uma letra nova que siga de muito perto a original em tema, emoção, narrativa, número de versos por secção ([Verso], [Refrão], [Verso 2], [Refrão], [Ponte]), métrica e esquema de rimas.
    - NUNCA copies frases da letra original. Palavras e imagens 100% novas.
-   - LIMITE OBRIGATÓRIO: A letra DEVE ter menos de 4000 caracteres no total.
-4. ESTILO MUSICAL (LIMITE ESTRITO):
-   - O estilo sonoro com todos os campos sumariados DEVE ter menos de 900 caracteres no total. Sê conciso, direto e cirúrgico em cada parâmetro.`;
+   - LIMITE OBRIGATÓRIO: A letra DEVE ter menos de 4500 caracteres no total.
+3. ESTILO MUSICAL (LIMITE ESTRITO):
+   - O estilo sonoro com todos os campos sumariados DEVE ter menos de 950 caracteres no total. Sê conciso, direto e cirúrgico em cada parâmetro.`;
 
-    const userPrompt = `Analisa os primeiros 3 minutos do áudio (${fileName || 'faixa'}).
+    const userPrompt = youtubeUrl
+      ? `Analisa os 60 segundos deste vídeo do YouTube (de 20s a 80s: ${fileName || 'faixa'}). Foca-te estritamente no áudio, ritmo, melodia, letra e instrumentação musical.
+1. Identifica se é instrumental/batida ou se tem voz cantada.
+2. Gera a letra alternativa ([Verso], [Refrão], [Ponte]) ou "Instrumental: sem letra" (< 4000 caracteres).
+3. Descreve o estilo sonoro original com etiquetas em Português de Portugal (< 900 caracteres).`
+      : `Analisa os primeiros 3 minutos do áudio (${fileName || 'faixa'}).
 1. Identifica se é instrumental/batida ou se tem voz cantada.
 2. Gera a letra alternativa ([Verso], [Refrão], [Ponte]) ou "Instrumental: sem letra" (< 4000 caracteres).
 3. Descreve o estilo sonoro original com etiquetas em Português de Portugal (< 900 caracteres).`;
 
-    // Stream generation with reduced thinking (ThinkingLevel.LOW) for lowest latency
-    const stream = await ai.models.generateContentStream({
-      model: 'gemini-3.8-flash',
-      contents: [
+    // Converte links youtu.be para o formato canónico youtube.com/watch?v=ID antes de enviar
+    const videoId = youtubeUrl ? extractYouTubeVideoId(youtubeUrl) : null;
+    const standardYoutubeUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : (youtubeUrl ? youtubeUrl.trim() : '');
+
+    const streamConfig: any = {
+      systemInstruction,
+      thinkingConfig: {
+        thinkingLevel: ThinkingLevel.LOW,
+      },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          isInstrumental: { type: Type.BOOLEAN },
+          idiomaLetra: { type: Type.STRING },
+          letra: { type: Type.STRING, description: 'Letra alternativa estruturada com [Verso] e [Refrão], ou Instrumental: sem letra. Máximo 4000 caracteres.' },
+          estilo: {
+            type: Type.OBJECT,
+            properties: {
+              descricao: { type: Type.STRING, description: 'Descrição compacta da produção e atmosfera sonora em Português de Portugal (1 a 2 parágrafos concisos).' },
+              tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: '5 a 8 etiquetas de estilo essenciais.' },
+              tema: { type: Type.STRING },
+              emocao: { type: Type.STRING },
+              genero: { type: Type.STRING },
+              bpm: { type: Type.STRING },
+              compasso: { type: Type.STRING },
+              tom: { type: Type.STRING },
+              swingGroove: { type: Type.STRING },
+              padraoBateria: { type: Type.STRING },
+              linhaBaixo: { type: Type.STRING },
+              samplesSintetizadores: { type: Type.STRING },
+              estruturaBatida: { type: Type.STRING },
+              instrumentos: { type: Type.ARRAY, items: { type: Type.STRING } },
+              tipoVoz: { type: Type.STRING },
+              atmosfera: { type: Type.STRING },
+              producao: { type: Type.STRING },
+            },
+            required: ['descricao', 'tags'],
+          },
+        },
+        required: ['isInstrumental', 'letra', 'estilo'],
+      },
+    };
+
+    // Para YouTube, usa resolução de média baixa (MEDIA_RESOLUTION_LOW) para ser mais rápido
+    // e NÃO usa ferramentas nem pesquisa na mesma chamada
+    if (youtubeUrl) {
+      streamConfig.mediaResolution = MediaResolution.MEDIA_RESOLUTION_LOW;
+    }
+
+    let fullText = '';
+    let hasSentLyricsStep = false;
+    let hasSentStyleStep = false;
+
+    const processStreamChunks = async (streamInstance: any): Promise<string> => {
+      let accumulated = '';
+      for await (const chunk of streamInstance) {
+        const chunkText = chunk.text || '';
+        accumulated += chunkText;
+
+        // Notificação progressiva no stream
+        if (!hasSentLyricsStep && (accumulated.includes('"letra"') || accumulated.length > 80)) {
+          hasSentLyricsStep = true;
+          sendEvent({
+            step: 'lyrics',
+            message: 'A escrever a letra alternativa...',
+            detail: 'A alinhar métrica silábica, rimas e estrutura [Verso]/[Refrão].',
+          });
+        }
+
+        if (!hasSentStyleStep && (accumulated.includes('"estilo"') || accumulated.length > 500)) {
+          hasSentStyleStep = true;
+          sendEvent({
+            step: 'style',
+            message: 'A criar o estilo musical...',
+            detail: 'A compilar etiquetas sonoras, timbres e parâmetros acústicos.',
+          });
+        }
+      }
+      return accumulated;
+    };
+
+    if (youtubeUrl) {
+      // 1. TENTATIVA 1: com videoMetadata (20s a 80s)
+      const contentsWithOffsets = [
+        {
+          fileData: {
+            fileUri: standardYoutubeUrl,
+            mimeType: 'video/*',
+          },
+          videoMetadata: {
+            startOffset: '20s',
+            endOffset: '80s',
+          },
+        },
+        {
+          text: userPrompt,
+        },
+      ];
+
+      // 2. TENTATIVA 2: sem offsets (vídeo completo se tiver menos de 80s ou falha de offset)
+      const contentsWithoutOffsets = [
+        {
+          fileData: {
+            fileUri: standardYoutubeUrl,
+            mimeType: 'video/*',
+          },
+        },
+        {
+          text: userPrompt,
+        },
+      ];
+
+      let streamSuccess = false;
+      let lastApiError: any = null;
+
+      try {
+        const stream1 = await ai.models.generateContentStream({
+          model: 'gemini-3.5-flash-lite',
+          contents: contentsWithOffsets,
+          config: streamConfig,
+        });
+        fullText = await processStreamChunks(stream1);
+        streamSuccess = true;
+      } catch (err1: any) {
+        lastApiError = err1;
+        console.warn('Tentativa 1 (gemini-3.5-flash-lite) falhou:', err1?.message || err1);
+
+        try {
+          const stream2 = await ai.models.generateContentStream({
+            model: 'gemini-3.8-flash',
+            contents: contentsWithOffsets,
+            config: streamConfig,
+          });
+          fullText = await processStreamChunks(stream2);
+          streamSuccess = true;
+        } catch (err2: any) {
+          lastApiError = err2;
+          console.error('Tentativa 2 (gemini-3.8-flash fallback) falhou:', err2?.message || err2);
+        }
+      }
+
+      if (!streamSuccess || !fullText) {
+        // Ambas as tentativas falharam: reporta o erro com detalhes reais da API
+        const details = extractApiErrorDetails(lastApiError);
+        const errMsg = details.full;
+
+        const isYoutubeAccessIssue =
+          errMsg.includes('URL_UNREACHABLE') ||
+          errMsg.includes('Cannot fetch content') ||
+          errMsg.includes('INVALID_ARGUMENT') ||
+          errMsg.includes('PERMISSION_DENIED') ||
+          errMsg.includes('private') ||
+          errMsg.includes('restricted') ||
+          errMsg.includes('UNAVAILABLE') ||
+          errMsg.includes('NOT_FOUND');
+
+        const friendlyMessage = isYoutubeAccessIssue
+          ? 'Não consegui aceder a este vídeo. Usa um vídeo público ou envia o ficheiro de áudio.'
+          : cleanGeminiErrorMessage(lastApiError);
+
+        sendEvent({
+          step: 'error',
+          message: friendlyMessage,
+          error: friendlyMessage,
+          errorDetails: details,
+        } as any);
+        return res.end();
+      }
+    } else {
+      // Fluxo de ficheiro de áudio local
+      const cleanBase64 = audioBase64.replace(/^data:audio\/[a-zA-Z0-9.+_-]+;base64,/, '');
+      let geminiMime = (mimeType || 'audio/mp3').toLowerCase();
+      if (geminiMime === 'audio/wave' || geminiMime === 'audio/x-wav') {
+        geminiMime = 'audio/wav';
+      } else if (geminiMime === 'audio/mpeg') {
+        geminiMime = 'audio/mp3';
+      }
+
+      const contents = [
         {
           inlineData: {
             mimeType: geminiMime,
@@ -183,75 +526,21 @@ REGRAS OBRIGATÓRIAS:
         {
           text: userPrompt,
         },
-      ],
-      config: {
-        systemInstruction,
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.LOW,
-        },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            isInstrumental: { type: Type.BOOLEAN },
-            idiomaLetra: { type: Type.STRING },
-            letra: { type: Type.STRING, description: 'Letra alternativa estruturada com [Verso] e [Refrão], ou Instrumental: sem letra. Máximo 4000 caracteres.' },
-            estilo: {
-              type: Type.OBJECT,
-              properties: {
-                descricao: { type: Type.STRING, description: 'Descrição compacta da produção e atmosfera sonora em Português de Portugal (1 a 2 parágrafos concisos).' },
-                tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: '5 a 8 etiquetas de estilo essenciais.' },
-                tema: { type: Type.STRING },
-                emocao: { type: Type.STRING },
-                genero: { type: Type.STRING },
-                bpm: { type: Type.STRING },
-                compasso: { type: Type.STRING },
-                tom: { type: Type.STRING },
-                swingGroove: { type: Type.STRING },
-                padraoBateria: { type: Type.STRING },
-                linhaBaixo: { type: Type.STRING },
-                samplesSintetizadores: { type: Type.STRING },
-                estruturaBatida: { type: Type.STRING },
-                instrumentos: { type: Type.ARRAY, items: { type: Type.STRING } },
-                tipoVoz: { type: Type.STRING },
-                atmosfera: { type: Type.STRING },
-                producao: { type: Type.STRING },
-              },
-              required: ['descricao', 'tags'],
-            },
-          },
-          required: ['isInstrumental', 'letra', 'estilo'],
-        },
-      },
-    });
+      ];
 
-    let fullText = '';
-    let hasSentLyricsStep = false;
-    let hasSentStyleStep = false;
-
-    for await (const chunk of stream) {
-      const chunkText = chunk.text || '';
-      fullText += chunkText;
-
-      // Progressively notify the client based on incoming stream content
-      if (!hasSentLyricsStep && (fullText.includes('"letra"') || fullText.length > 80)) {
-        hasSentLyricsStep = true;
-        sendEvent({
-          step: 'lyrics',
-          message: 'A escrever a letra alternativa...',
-          detail: 'A alinhar métrica silábica, rimas e estrutura [Verso]/[Refrão].',
+      try {
+        const stream = await ai.models.generateContentStream({
+          model: 'gemini-3.5-flash-lite',
+          contents,
+          config: streamConfig,
         });
-      }
-
-      if (!hasSentStyleStep && (fullText.includes('"estilo"') || fullText.length > 500)) {
-        hasSentStyleStep = true;
-        sendEvent({
-          step: 'style',
-          message: 'A criar o estilo musical...',
-          detail: 'A compilar etiquetas sonoras, timbres e parâmetros acústicos.',
-        });
+        fullText = await processStreamChunks(stream);
+      } catch (audioErr: any) {
+        throw audioErr;
       }
     }
+
+    
 
     if (!fullText) {
       throw new Error('O modelo não devolveu resposta de áudio.');
@@ -290,7 +579,7 @@ REGRAS OBRIGATÓRIAS:
 
       try {
         const shortenLetraRes = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-3.5-flash-lite',
           contents: `A seguinte letra tem ${currentLetra.length} caracteres e ultrapassa o limite de 4500 caracteres.
 Resume e encurta a letra para que tenha rigorosamente MENOS DE 4500 caracteres no total, preservando a métrica, as rimas e as secções [Verso], [Refrão] e [Ponte]:
 
@@ -337,7 +626,7 @@ ${currentLetra}`,
 
       try {
         const shortenStyleRes = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-3.5-flash-lite',
           contents: `O seguinte estilo musical tem ${styleText.length} caracteres e ultrapassa o limite estrito de 950 caracteres.
 Resume a descrição e etiquetas em Português de Portugal de modo compacto para que o somatório total tenha rigorosamente MENOS DE 950 caracteres:
 
@@ -411,11 +700,29 @@ ${JSON.stringify(currentEstilo)}`,
     res.end();
   } catch (error: any) {
     console.error('Erro em /api/create-alternative:', error);
+    const details = extractApiErrorDetails(error);
+    const errMsg = details.full;
+    const isYoutubeAccessIssue =
+      req.body?.youtubeUrl &&
+      (errMsg.includes('URL_UNREACHABLE') ||
+        errMsg.includes('Cannot fetch content') ||
+        errMsg.includes('INVALID_ARGUMENT') ||
+        errMsg.includes('PERMISSION_DENIED') ||
+        errMsg.includes('private') ||
+        errMsg.includes('restricted') ||
+        errMsg.includes('UNAVAILABLE') ||
+        errMsg.includes('NOT_FOUND'));
+
+    const friendlyError = isYoutubeAccessIssue
+      ? 'Não consegui aceder a este vídeo. Usa um vídeo público ou envia o ficheiro de áudio.'
+      : cleanGeminiErrorMessage(error);
+
     sendEvent({
       step: 'error',
-      message: error?.message || 'Falha ao processar áudio.',
-      error: error?.message || 'Ocorreu um erro ao comunicar com o modelo Gemini.',
-    });
+      message: isYoutubeAccessIssue ? 'Não consegui aceder a este vídeo.' : friendlyError,
+      error: friendlyError,
+      errorDetails: details,
+    } as any);
     res.end();
   }
 });
@@ -472,7 +779,7 @@ REGRAS:
 Devolve estritamente um JSON com o campo "letra".`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       contents: prompt,
       config: {
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
@@ -500,7 +807,7 @@ Devolve estritamente um JSON com o campo "letra".`;
     if (newLetra.length > MAX_LETRA_CHARS) {
       try {
         const shortenRes = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-3.5-flash-lite',
           contents: `Encurta esta letra para ter estritamente menos de 4500 caracteres, mantendo [Verso], [Refrão], [Ponte] e as rimas:\n\n${newLetra}`,
           config: {
             thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
@@ -532,6 +839,95 @@ Devolve estritamente um JSON com o campo "letra".`;
   } catch (error: any) {
     console.error('Erro em /api/regenerate-lyrics:', error);
     return res.status(500).json({ error: error?.message || 'Falha ao gerar outra versão de letra.' });
+  }
+});
+
+/**
+ * Endpoint para atualizar o idioma manualmente e traduzir/adaptar letra e estilo.
+ */
+app.post('/api/update-language', async (req, res) => {
+  try {
+    const { analysisId, novoIdioma } = req.body;
+    if (!novoIdioma) {
+      return res.status(400).json({ error: 'Idioma não especificado.' });
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'Chave da API Gemini não configurada.' });
+    }
+
+    const cached = analysisId ? audioAnalysisCache.get(analysisId) : null;
+    if (!cached) {
+      return res.status(404).json({ error: 'Análise não encontrada na memória.' });
+    }
+
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
+
+    const isEnglish = novoIdioma.toLowerCase().includes('ingl');
+    const isPortuguese = novoIdioma.toLowerCase().includes('portugu');
+    const isAuto = novoIdioma === 'Detetar automaticamente';
+
+    const prompt = `Adapta, traduz e reescreve a letra alternativa E a descrição do estilo musical (incluindo etiquetas) ${isAuto ? 'para o idioma original da música (deteta-o novamente a partir da letra atual).' : 'para o seguinte idioma escolhido pelo utilizador: "' + novoIdioma + '".'}
+${isPortuguese ? '- Usa estritamente português de Portugal (vocabulário, ortografia e expressões europeias, nunca brasileiras).' : ''}
+${isEnglish ? '- Usa inglês internacional neutro, sem gíria regional.' : ''}
+
+Perfil musical anterior:
+Letra:
+${cached.letra}
+
+Estilo:
+${typeof cached.estilo === 'string' ? cached.estilo : JSON.stringify(cached.estilo)}
+
+REGRAS:
+1. Mantém a estrutura com [Verso], [Refrão], [Ponte] e a mesma métrica/rimas no idioma "${novoIdioma}".
+2. A descrição do estilo e etiquetas devem também estar em "${novoIdioma}" (ou Português se for instrumental).
+3. Letra < 4500 caracteres. Estilo < 950 caracteres.
+
+Devolve estritamente um JSON com a estrutura:
+{
+  "letra": "...",
+  "estilo": { "descricao": "...", "tags": ["..."], "bpm": "...", "tom": "...", "genero": "...", "emocao": "...", "tipoVoz": "..." },
+  "idiomaLetra": "${novoIdioma}"
+}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash-lite',
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: 'application/json',
+      },
+    });
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(response.text || '{}');
+    } catch {
+      const match = response.text?.match(/\{[\s\S]*\}/);
+      if (match) parsed = JSON.parse(match[0]);
+      else throw new Error('Falha ao interpretar JSON.');
+    }
+
+    const updatedLetra = parsed.letra || cached.letra;
+    const updatedEstilo = parsed.estilo || cached.estilo;
+
+    cached.letra = updatedLetra;
+    cached.estilo = updatedEstilo;
+    cached.idiomaLetra = novoIdioma;
+
+    return res.json({
+      letra: updatedLetra,
+      estilo: updatedEstilo,
+      idiomaLetra: novoIdioma,
+      analysisId,
+    });
+  } catch (error: any) {
+    console.error('Erro em /api/update-language:', error);
+    return res.status(500).json({ error: error?.message || 'Falha ao atualizar o idioma.' });
   }
 });
 
@@ -591,7 +987,7 @@ ${currentLetra}
 Devolve estritamente o JSON com o pacote YouTube SEO.`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       contents: userPrompt,
       config: {
         systemInstruction,
@@ -670,7 +1066,7 @@ Devolve estritamente o JSON com o pacote YouTube SEO.`;
     if (typeof seoResult.descricao === 'string' && seoResult.descricao.length > 5000) {
       try {
         const shortenDesc = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-3.5-flash-lite',
           contents: `A seguinte descrição de YouTube tem ${seoResult.descricao.length} caracteres e ultrapassa 5000 caracteres. Resume para ter estritamente menos de 5000 caracteres mantendo gancho, resumo e letra:\n\n${seoResult.descricao}`,
           config: {
             thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
@@ -759,7 +1155,7 @@ REGRAS:
 Devolve estritamente um JSON com o campo "letra".`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       contents: prompt,
       config: {
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },

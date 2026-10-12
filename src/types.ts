@@ -46,6 +46,9 @@ export interface SongAlternativeResult {
   isInstrumental?: boolean;
   letraCriada?: boolean;
   youtubeSeo?: YouTubeSeoPackage;
+  sourceType?: 'file' | 'youtube';
+  sourceTitle?: string;
+  sourceThumbnail?: string;
 }
 
 export interface AudioFileInfo {
@@ -56,3 +59,18 @@ export interface AudioFileInfo {
   url: string;
   base64?: string;
 }
+
+export interface YouTubeVideoInfo {
+  url: string;
+  title: string;
+  author?: string;
+  thumbnailUrl: string;
+  videoId?: string;
+}
+
+export interface ErrorDetails {
+  code?: string | number;
+  message?: string;
+  full?: string;
+}
+
